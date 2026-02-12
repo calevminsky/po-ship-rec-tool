@@ -1,0 +1,9 @@
+{
+  "name": "po-ship-rec-tool",
+  "private": true,
+  "workspaces": ["server", "client"],
+  "scripts": {
+    "build": "npm --workspace client run build",
+    "start": "npm --workspace server start"
+  }
+}
