@@ -1,26 +1,17 @@
-export async function fetchPO(po) {
-  const res = await fetch(`/api/po/${encodeURIComponent(po)}`);
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.error || "Failed to load PO");
+async function j(res) {
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || "Request failed");
   return data;
 }
 
-export async function saveRecord(recordId, payload) {
-  const res = await fetch(`/api/record/${encodeURIComponent(recordId)}`, {
-    method: "PATCH",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
-  });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.error || "Failed to save");
-  return data;
+export async function fetchPO(po) {
+  const res = await fetch(`/api/po/${encodeURIComponent(po)}`);
+  return j(res);
 }
 
 export async function me() {
   const res = await fetch("/api/me");
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error || "Not logged in");
-  return data; // { ok, user, authEnabled }
+  return j(res);
 }
 
 export async function login(username, password) {
@@ -29,14 +20,54 @@ export async function login(username, password) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username, password })
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.error || "Login failed");
-  return data;
+  return j(res);
 }
 
 export async function logout() {
   const res = await fetch("/api/logout", { method: "POST" });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.error || "Logout failed");
-  return data;
+  return j(res);
+}
+
+export async function getLocations() {
+  const res = await fetch("/api/locations");
+  return j(res);
+}
+
+export async function saveAllocation(recordId, allocObj) {
+  const res = await fetch(`/api/record/${encodeURIComponent(recordId)}/save-allocation`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ allocJson: JSON.stringify(allocObj) })
+  });
+  return j(res);
+}
+
+export async function saveScan(recordId, scanObj, recTotals) {
+  const res = await fetch(`/api/record/${encodeURIComponent(recordId)}/save-scan`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ scanJson: JSON.stringify(scanObj), recTotals })
+  });
+  return j(res);
+}
+
+export async function shopifyByBarcode(barcode) {
+  const res = await fetch(`/api/shopify/barcode/${encodeURIComponent(barcode)}`);
+  return j(res);
+}
+
+export async function closeoutPdf(payload) {
+  const res = await fetch("/api/closeout", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+
+  if (!res.ok) {
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data?.error || "Closeout failed");
+  }
+
+  const blob = await res.blob();
+  return blob;
 }
