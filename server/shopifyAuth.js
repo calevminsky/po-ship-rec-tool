@@ -36,7 +36,6 @@ export async function getShopifyAccessToken() {
     throw new Error(data?.error_description || data?.error || "Failed to get Shopify access token");
   }
 
-  // Shopify docs: expires_in is ~86399 seconds and you refresh the same way. :contentReference[oaicite:2]{index=2}
   cached.token = data.access_token;
   cached.scope = data.scope || "";
   cached.expiresAt = nowMs() + (Number(data.expires_in || 0) * 1000);
