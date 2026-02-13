@@ -439,3 +439,28 @@ body{
   font-size: 12px;
   line-height: 1.3;
 }
+
+.loginPage{
+  height:100vh;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+}
+
+.loginCard{
+  width:320px;
+  padding:28px;
+  border-radius:20px;
+  border:1px solid var(--border);
+  background:rgba(255,255,255,0.06);
+  backdrop-filter:blur(12px);
+  display:flex;
+  flex-direction:column;
+  gap:16px;
+}
+
+.loginTitle{
+  font-size:18px;
+  font-weight:900;
+  text-align:center;
+}
