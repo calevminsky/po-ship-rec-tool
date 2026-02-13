@@ -49,7 +49,7 @@ function pickAttachmentUrl(attField) {
 
 export async function listRecordsByPO(po) {
   const safePO = escapeQuotes(po);
-  const formula = `{${PO_FIELD}}="${safePO}"`;
+  const formula = `LOWER(TRIM({${PO_FIELD}}))=LOWER(TRIM("${safePO}"))`;
 
   const params = new URLSearchParams();
   params.set("filterByFormula", formula);
