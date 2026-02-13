@@ -464,3 +464,82 @@ body{
   font-weight:900;
   text-align:center;
 }
+
+.authShell{
+  min-height:100vh;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  padding: 24px;
+}
+
+.authCard{
+  width: 380px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: linear-gradient(180deg, rgba(255,255,255,0.10), rgba(255,255,255,0.06));
+  box-shadow: var(--shadow);
+  backdrop-filter: blur(12px);
+  padding: 22px;
+  display:flex;
+  flex-direction:column;
+  gap: 12px;
+}
+
+.authTitle{
+  font-size: 18px;
+  font-weight: 950;
+  letter-spacing: -0.02em;
+}
+
+.authSub{
+  color: var(--muted);
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+.authInput{
+  width:100%;
+  padding: 12px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: rgba(10,14,24,0.55);
+  color: var(--text);
+  outline: none;
+  font-size: 14px;
+}
+
+.authInput:focus{
+  border-color: rgba(94,234,212,0.55);
+  box-shadow: 0 0 0 4px rgba(94,234,212,0.14);
+}
+
+.authError{
+  color: rgba(255,255,255,0.95);
+  background: rgba(251,113,133,0.14);
+  border: 1px solid rgba(251,113,133,0.28);
+  padding: 10px 12px;
+  border-radius: 14px;
+  font-size: 12px;
+}
+
+.userPill{
+  display:flex;
+  gap: 10px;
+  align-items:center;
+  justify-content:flex-end;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.linkBtn{
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-weight: 900;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
