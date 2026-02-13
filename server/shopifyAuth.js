@@ -1,44 +1,70 @@
-let cached = { token: null, expiresAt: 0, scope: "" };
+import crypto from "crypto";
+import fs from "fs";
+import path from "path";
 
-function nowMs() {
-  return Date.now();
+function tokenPath() {
+  return process.env.SHOPIFY_TOKEN_STORE_PATH || path.join(process.cwd(), "shopify_token.json");
 }
 
-export async function getShopifyAccessToken() {
-  const shop = process.env.SHOPIFY_STORE_DOMAIN;
-  const client_id = process.env.SHOPIFY_CLIENT_ID;
-  const client_secret = process.env.SHOPIFY_CLIENT_SECRET;
-
-  if (!shop || !client_id || !client_secret) {
-    throw new Error("Missing Shopify env vars (SHOPIFY_STORE_DOMAIN/SHOPIFY_CLIENT_ID/SHOPIFY_CLIENT_SECRET)");
+export function loadTokenFromDisk() {
+  try {
+    const p = tokenPath();
+    if (!fs.existsSync(p)) return null;
+    const raw = fs.readFileSync(p, "utf8");
+    const json = JSON.parse(raw);
+    if (json?.access_token) return json.access_token;
+    return null;
+  } catch {
+    return null;
   }
+}
 
-  // refresh if < 2 minutes left
-  if (cached.token && cached.expiresAt - nowMs() > 120_000) {
-    return cached.token;
-  }
+export function saveTokenToDisk(accessToken) {
+  const p = tokenPath();
+  const dir = path.dirname(p);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(p, JSON.stringify({ access_token: accessToken, saved_at: new Date().toISOString() }, null, 2));
+}
 
-  const url = `https://${shop}/admin/oauth/access_token`;
-  const body = new URLSearchParams({
-    grant_type: "client_credentials",
-    client_id,
-    client_secret
+export function makeState() {
+  return crypto.randomBytes(16).toString("hex");
+}
+
+export function buildAuthorizeUrl(state) {
+  const shop = process.env.SHOPIFY_SHOP;
+  const clientId = process.env.SHOPIFY_CLIENT_ID;
+  const scopes = process.env.SHOPIFY_SCOPES || "read_products,read_inventory,write_inventory";
+  const redirectUri = process.env.SHOPIFY_REDIRECT_URI;
+
+  const params = new URLSearchParams({
+    client_id: clientId,
+    scope: scopes,
+    redirect_uri: redirectUri,
+    state,
   });
 
-  const res = await fetch(url, {
+  return `https://${shop}/admin/oauth/authorize?${params.toString()}`;
+}
+
+export async function exchangeCodeForToken(code) {
+  const shop = process.env.SHOPIFY_SHOP;
+  const clientId = process.env.SHOPIFY_CLIENT_ID;
+  const clientSecret = process.env.SHOPIFY_CLIENT_SECRET;
+
+  const resp = await fetch(`https://${shop}/admin/oauth/access_token`, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      client_id: clientId,
+      client_secret: clientSecret,
+      code,
+    }),
   });
 
-  const data = await res.json();
-  if (!res.ok) {
-    throw new Error(data?.error_description || data?.error || "Failed to get Shopify access token");
+  const json = await resp.json();
+  if (!resp.ok) {
+    throw new Error(`Token exchange failed: ${resp.status} ${JSON.stringify(json)}`);
   }
-
-  cached.token = data.access_token;
-  cached.scope = data.scope || "";
-  cached.expiresAt = nowMs() + (Number(data.expires_in || 0) * 1000);
-
-  return cached.token;
+  if (!json?.access_token) throw new Error("Token exchange succeeded but no access_token returned.");
+  return json.access_token;
 }
