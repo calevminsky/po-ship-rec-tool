@@ -18,7 +18,6 @@ function money(n) {
 }
 
 function fmtDateForInput(airtableDate) {
-  // Airtable dates often come as "YYYY-MM-DD" already; if datetime, slice date part.
   if (!airtableDate) return "";
   return String(airtableDate).slice(0, 10);
 }
@@ -33,6 +32,10 @@ export default function App() {
   const [recEdits, setRecEdits] = useState(null);
   const [shipDate, setShipDate] = useState("");
   const [delivery, setDelivery] = useState("");
+
+  // NEW: mutually exclusive edit mode
+  // "none" | "ship" | "received"
+  const [editMode, setEditMode] = useState("none");
 
   const [status, setStatus] = useState("");
 
@@ -54,7 +57,7 @@ export default function App() {
       const data = await fetchPO(po);
       setPoData(data);
 
-      // IMPORTANT: do NOT auto-select if multiple records
+      // do NOT auto-select if multiple
       if ((data.records || []).length === 1) {
         const only = data.records[0];
         setSelectedId(only.id);
@@ -69,6 +72,8 @@ export default function App() {
         setShipDate("");
         setDelivery("");
       }
+
+      setEditMode("none");
 
       if (!(data.records || []).length) setStatus("No records found for that PO #.");
     } catch (e) {
@@ -86,12 +91,14 @@ export default function App() {
       setRecEdits(null);
       setShipDate("");
       setDelivery("");
+      setEditMode("none");
       return;
     }
     setShipEdits({ ...r.ship });
     setRecEdits({ ...r.rec });
     setShipDate(fmtDateForInput(r.shipDate));
     setDelivery(fmtDateForInput(r.delivery));
+    setEditMode("none");
     setStatus("");
   }
 
@@ -99,6 +106,10 @@ export default function App() {
     const v = clampInt(value);
     if (kind === "ship") setShipEdits((prev) => ({ ...(prev || {}), [size]: v }));
     if (kind === "rec") setRecEdits((prev) => ({ ...(prev || {}), [size]: v }));
+  }
+
+  function toggleEdit(mode) {
+    setEditMode((prev) => (prev === mode ? "none" : mode));
   }
 
   async function onSave() {
@@ -114,6 +125,7 @@ export default function App() {
         delivery: delivery || null
       });
       setStatus("Saved ✅");
+      setEditMode("none");
     } catch (e) {
       setStatus(`Save failed: ${e.message}`);
     } finally {
@@ -131,175 +143,238 @@ export default function App() {
   const shipTotalCost = shipTotalUnits * unitCost;
   const recTotalCost = recTotalUnits * unitCost;
 
+  const shipEnabled = editMode === "ship";
+  const recEnabled = editMode === "received";
+
   return (
-    <div className="page">
-      <div className="topbar">
-        <div>
-          <div className="title">PO Shipping & Receiving</div>
-          <div className="subtitle">Enter Ship / Received by size, totals & costs calculate automatically.</div>
-        </div>
-      </div>
-
-      <div className="grid">
-        <div className="panel">
-          <div className="panelTitle">Find PO</div>
-
-          <div className="formRow">
-            <label>PO #</label>
-            <div className="inline">
-              <input
-                className="text"
-                value={poInput}
-                onChange={(e) => setPoInput(e.target.value)}
-                placeholder="Type PO number…"
-              />
-              <button className="btnPrimary" onClick={onLoadPO} disabled={loading || !poInput.trim()}>
-                {loading ? "Loading…" : "Load"}
-              </button>
-            </div>
+    <div className="app">
+      <div className="shell">
+        <header className="header">
+          <div className="brand">
+            <div className="brandTitle">Shipping & Receiving</div>
+            <div className="brandSub">Load a PO → choose product → update Ship or Received.</div>
           </div>
 
-          {poData && (
-            <div className="formRow">
-              <label>Product</label>
-              <select className="select" value={selectedId} onChange={(e) => onSelect(e.target.value)}>
-                <option value="">{records.length ? "Select a product…" : "(no products found)"}</option>
-                {records.map((r) => (
-                  <option key={r.id} value={r.id}>
-                    {r.label}
+          <div className="headerRight">
+            <div className="statusPill" data-show={status ? "1" : "0"}>
+              {status || " "}
+            </div>
+          </div>
+        </header>
+
+        <div className="layout">
+          {/* LEFT: Lookup */}
+          <aside className="card lookup">
+            <div className="cardTitle">Find</div>
+
+            <div className="field">
+              <div className="label">PO #</div>
+              <div className="hstack">
+                <input
+                  className="input"
+                  value={poInput}
+                  onChange={(e) => setPoInput(e.target.value)}
+                  placeholder="e.g. YB1892"
+                />
+                <button
+                  className="btn primary"
+                  onClick={onLoadPO}
+                  disabled={loading || !poInput.trim()}
+                >
+                  {loading ? "Loading…" : "Load"}
+                </button>
+              </div>
+            </div>
+
+            {poData && (
+              <div className="field">
+                <div className="label">Product</div>
+                <select className="select" value={selectedId} onChange={(e) => onSelect(e.target.value)}>
+                  <option value="">
+                    {records.length ? "Select a product…" : "(no products found)"}
                   </option>
-                ))}
-              </select>
-              {records.length > 1 && !selectedId && (
-                <div className="hint">This PO has multiple products—select the correct one to enter Ship/Received.</div>
-              )}
-            </div>
-          )}
+                  {records.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.label}
+                    </option>
+                  ))}
+                </select>
 
-          {status && <div className="status">{status}</div>}
-        </div>
-
-        <div className="panel">
-          <div className="panelTitle">Details</div>
-
-          {!selected ? (
-            <div className="empty">
-              {poData
-                ? "Select a product to view sizes and enter Ship/Received."
-                : "Load a PO to begin."}
-            </div>
-          ) : (
-            <>
-              <div className="detailHeader">
-                <div className="detailLeft">
-                  <div className="detailName">{selected.label}</div>
-                  <div className="detailMeta">
-                    <span className="pill">Unit Cost: <strong>{money(unitCost)}</strong></span>
+                {records.length > 1 && !selectedId && (
+                  <div className="hint">
+                    This PO has multiple products. Select one to edit Ship / Received.
                   </div>
-                </div>
-
-                {selected.imageUrl ? (
-                  <div className="thumbWrap">
-                    <img className="thumb" src={selected.imageUrl} alt="Product or Swatch" />
-                  </div>
-                ) : (
-                  <div className="thumbEmpty">No image</div>
                 )}
               </div>
+            )}
 
-              <div className="tableWrap">
-                <table className="matrix">
-                  <thead>
-                    <tr>
-                      <th className="rowHead"></th>
-                      <th className="dateCol"></th>
-                      {sizes.map((s) => (
-                        <th key={s}>{s}</th>
-                      ))}
-                      <th className="totCol">Total Units</th>
-                      <th className="costCol">Total Cost</th>
-                    </tr>
-                  </thead>
+            <div className="divider" />
 
-                  <tbody>
-                    <tr>
-                      <td className="rowHead">Buy Units</td>
-                      <td className="dateCell muted">—</td>
-                      {sizes.map((s) => (
-                        <td key={s} className="readCell">
-                          {Number(selected.buy[s] ?? 0)}
-                        </td>
-                      ))}
-                      <td className="readCell strong">{buyTotalUnits}</td>
-                      <td className="readCell strong">{money(buyTotalCost)}</td>
-                    </tr>
-
-                    <tr>
-                      <td className="rowHead">Ship Units</td>
-                      <td className="dateCell">
-                        <input
-                          className="date"
-                          type="date"
-                          value={shipDate}
-                          onChange={(e) => setShipDate(e.target.value)}
-                        />
-                      </td>
-                      {sizes.map((s) => (
-                        <td key={s}>
-                          <input
-                            className="qty"
-                            inputMode="numeric"
-                            value={shipEdits?.[s] ?? 0}
-                            onChange={(e) => setCell("ship", s, e.target.value)}
-                          />
-                        </td>
-                      ))}
-                      <td className="readCell strong">{shipTotalUnits}</td>
-                      <td className="readCell strong">{money(shipTotalCost)}</td>
-                    </tr>
-
-                    <tr>
-                      <td className="rowHead">Received Units</td>
-                      <td className="dateCell">
-                        <input
-                          className="date"
-                          type="date"
-                          value={delivery}
-                          onChange={(e) => setDelivery(e.target.value)}
-                        />
-                      </td>
-                      {sizes.map((s) => (
-                        <td key={s}>
-                          <input
-                            className="qty"
-                            inputMode="numeric"
-                            value={recEdits?.[s] ?? 0}
-                            onChange={(e) => setCell("rec", s, e.target.value)}
-                          />
-                        </td>
-                      ))}
-                      <td className="readCell strong">{recTotalUnits}</td>
-                      <td className="readCell strong">{money(recTotalCost)}</td>
-                    </tr>
-                  </tbody>
-                </table>
+            <div className="metaGrid">
+              <div className="meta">
+                <div className="metaLabel">Unit Cost</div>
+                <div className="metaValue">{selected ? money(unitCost) : "—"}</div>
               </div>
-
-              <div className="actions">
-                <button className="btnPrimary" onClick={onSave} disabled={loading}>
-                  {loading ? "Saving…" : "Save to Airtable"}
-                </button>
-                <div className="actionsHint">
-                  Saves <strong>Ship_*</strong>, <strong>Rec_*</strong>, <strong>Ship Date</strong>, and <strong>Delivery</strong>.
+              <div className="meta">
+                <div className="metaLabel">Edit Mode</div>
+                <div className="metaValue">
+                  {editMode === "none" ? "Locked" : editMode === "ship" ? "Ship" : "Received"}
                 </div>
               </div>
-            </>
-          )}
-        </div>
-      </div>
+            </div>
 
-      <div className="footer">
-        Totals shown here are calculated from entered size quantities (Airtable total fields are formulas).
+            <div className="footnote">
+              Tip: Enable <strong>one</strong> edit row at a time to prevent accidental changes.
+            </div>
+          </aside>
+
+          {/* RIGHT: Details + Table */}
+          <main className="card main">
+            {!selected ? (
+              <div className="emptyState">
+                <div className="emptyTitle">Ready when you are.</div>
+                <div className="emptyText">
+                  Enter a PO number on the left, then choose a product to see sizes and totals.
+                </div>
+              </div>
+            ) : (
+              <>
+                <div className="topRow">
+                  <div className="productInfo">
+                    <div className="productTitle">{selected.label}</div>
+                    <div className="productBadges">
+                      <span className="badge">Unit Cost: {money(unitCost)}</span>
+                      <span className="badge subtle">PO: {poData?.po}</span>
+                    </div>
+                  </div>
+
+                  <div className="imageCard">
+                    {selected.imageUrl ? (
+                      <img className="image" src={selected.imageUrl} alt="Product or Swatch" />
+                    ) : (
+                      <div className="imageEmpty">No image</div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="tableCard">
+                  <table className="matrix">
+                    <thead>
+                      <tr>
+                        <th className="c-rowlabel"></th>
+                        <th className="c-edit"></th>
+                        <th className="c-date"></th>
+                        {sizes.map((s) => (
+                          <th key={s} className="c-size">{s}</th>
+                        ))}
+                        <th className="c-total">Total Units</th>
+                        <th className="c-cost">Total Cost</th>
+                      </tr>
+                    </thead>
+
+                    <tbody>
+                      <tr>
+                        <td className="rowLabel">Buy Units</td>
+                        <td className="cellMuted">—</td>
+                        <td className="cellMuted">—</td>
+                        {sizes.map((s) => (
+                          <td key={s} className="cellRead">
+                            {Number(selected.buy[s] ?? 0)}
+                          </td>
+                        ))}
+                        <td className="cellRead strong">{buyTotalUnits}</td>
+                        <td className="cellRead strong">{money(buyTotalCost)}</td>
+                      </tr>
+
+                      <tr className={shipEnabled ? "rowActive" : ""}>
+                        <td className="rowLabel">Ship Units</td>
+                        <td className="cellCenter">
+                          <label className="check">
+                            <input
+                              type="checkbox"
+                              checked={shipEnabled}
+                              onChange={() => toggleEdit("ship")}
+                            />
+                            <span />
+                          </label>
+                        </td>
+                        <td className="cellCenter">
+                          <input
+                            className="date"
+                            type="date"
+                            value={shipDate}
+                            onChange={(e) => setShipDate(e.target.value)}
+                            disabled={!shipEnabled}
+                          />
+                        </td>
+                        {sizes.map((s) => (
+                          <td key={s}>
+                            <input
+                              className="qty"
+                              inputMode="numeric"
+                              value={shipEdits?.[s] ?? 0}
+                              onChange={(e) => setCell("ship", s, e.target.value)}
+                              disabled={!shipEnabled}
+                            />
+                          </td>
+                        ))}
+                        <td className="cellRead strong">{shipTotalUnits}</td>
+                        <td className="cellRead strong">{money(shipTotalCost)}</td>
+                      </tr>
+
+                      <tr className={recEnabled ? "rowActive" : ""}>
+                        <td className="rowLabel">Received Units</td>
+                        <td className="cellCenter">
+                          <label className="check">
+                            <input
+                              type="checkbox"
+                              checked={recEnabled}
+                              onChange={() => toggleEdit("received")}
+                            />
+                            <span />
+                          </label>
+                        </td>
+                        <td className="cellCenter">
+                          <input
+                            className="date"
+                            type="date"
+                            value={delivery}
+                            onChange={(e) => setDelivery(e.target.value)}
+                            disabled={!recEnabled}
+                          />
+                        </td>
+                        {sizes.map((s) => (
+                          <td key={s}>
+                            <input
+                              className="qty"
+                              inputMode="numeric"
+                              value={recEdits?.[s] ?? 0}
+                              onChange={(e) => setCell("rec", s, e.target.value)}
+                              disabled={!recEnabled}
+                            />
+                          </td>
+                        ))}
+                        <td className="cellRead strong">{recTotalUnits}</td>
+                        <td className="cellRead strong">{money(recTotalCost)}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <div className="actions">
+                  <button className="btn primary" onClick={onSave} disabled={loading || !selectedId}>
+                    {loading ? "Saving…" : "Save"}
+                  </button>
+
+                  <div className="actionsNote">
+                    Writes <strong>Ship_*</strong>, <strong>Rec_*</strong>, <strong>Ship Date</strong>,{" "}
+                    and <strong>Delivery</strong>. Totals are calculated here.
+                  </div>
+                </div>
+              </>
+            )}
+          </main>
+        </div>
       </div>
     </div>
   );
