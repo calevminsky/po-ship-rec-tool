@@ -6,8 +6,9 @@
   "scripts": {
     "start": "node index.js"
   },
-"dependencies": {
-  "express": "^4.19.2",
-  "cookie-parser": "^1.4.6"
-}
+  "dependencies": {
+    "cookie-parser": "^1.4.6",
+    "express": "^4.19.2",
+    "pdfkit": "^0.15.0"
+  }
 }
