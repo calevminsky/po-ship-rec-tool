@@ -1,3 +1,4 @@
+import { login } from "./api.js";
 import React, { useMemo, useState } from "react";
 import { fetchPO, saveRecord } from "./api.js";
 
@@ -146,6 +147,39 @@ export default function App() {
   const shipEnabled = editMode === "ship";
   const recEnabled = editMode === "received";
 
+const [isAuthenticated, setIsAuthenticated] = useState(false);
+const [passwordInput, setPasswordInput] = useState("");
+
+async function handleLogin() {
+  try {
+    await login(passwordInput);
+    setIsAuthenticated(true);
+  } catch (e) {
+    alert("Invalid password");
+  }
+}
+
+if (!isAuthenticated) {
+  return (
+    <div className="loginPage">
+      <div className="loginCard">
+        <div className="loginTitle">Secure Access</div>
+        <input
+          type="password"
+          placeholder="Enter password"
+          value={passwordInput}
+          onChange={(e) => setPasswordInput(e.target.value)}
+          className="input"
+        />
+        <button className="btn primary" onClick={handleLogin}>
+          Login
+        </button>
+      </div>
+    </div>
+  );
+}
+
+  
   return (
     <div className="app">
       <div className="shell">
