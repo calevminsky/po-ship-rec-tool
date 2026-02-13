@@ -1,5 +1,5 @@
-import React, { useMemo, useState } from "react";
-import { fetchPO, saveRecord, login, logout } from "./api.js";
+import React, { useEffect, useMemo, useState } from "react";
+import { fetchPO, saveRecord, login, logout, me } from "./api.js";
 
 function clampInt(v) {
   if (v === "" || v === null || v === undefined) return 0;
@@ -23,6 +23,63 @@ function fmtDateForInput(airtableDate) {
 }
 
 export default function App() {
+  // --------------------
+  // Auth state (Option 2)
+  // --------------------
+  const [authChecked, setAuthChecked] = useState(false);
+  const [user, setUser] = useState(null);
+  const [loginUser, setLoginUser] = useState("");
+  const [loginPass, setLoginPass] = useState("");
+  const [authError, setAuthError] = useState("");
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await me();
+        setUser(r.user); // { username }
+      } catch {
+        setUser(null);
+      } finally {
+        setAuthChecked(true);
+      }
+    })();
+  }, []);
+
+  async function doLogin() {
+    setAuthError("");
+    try {
+      const r = await login(loginUser.trim(), loginPass);
+      setUser(r.user);
+      setLoginPass("");
+    } catch (e) {
+      setAuthError(e.message || "Login failed");
+    }
+  }
+
+  async function doLogout() {
+    try {
+      await logout();
+    } finally {
+      setUser(null);
+      setLoginUser("");
+      setLoginPass("");
+      setAuthError("");
+      // clear any loaded PO data on logout
+      setPoInput("");
+      setPoData(null);
+      setSelectedId("");
+      setShipEdits(null);
+      setRecEdits(null);
+      setShipDate("");
+      setDelivery("");
+      setEditMode("none");
+      setStatus("");
+    }
+  }
+
+  // --------------------
+  // App state
+  // --------------------
   const [poInput, setPoInput] = useState("");
   const [loading, setLoading] = useState(false);
   const [poData, setPoData] = useState(null);
@@ -33,8 +90,7 @@ export default function App() {
   const [shipDate, setShipDate] = useState("");
   const [delivery, setDelivery] = useState("");
 
-  // NEW: mutually exclusive edit mode
-  // "none" | "ship" | "received"
+  // mutually exclusive edit mode: "none" | "ship" | "received"
   const [editMode, setEditMode] = useState("none");
 
   const [status, setStatus] = useState("");
@@ -74,7 +130,6 @@ export default function App() {
       }
 
       setEditMode("none");
-
       if (!(data.records || []).length) setStatus("No records found for that PO #.");
     } catch (e) {
       setStatus(e.message);
@@ -146,39 +201,57 @@ export default function App() {
   const shipEnabled = editMode === "ship";
   const recEnabled = editMode === "received";
 
-const [isAuthenticated, setIsAuthenticated] = useState(false);
-const [passwordInput, setPasswordInput] = useState("");
-
-async function handleLogin() {
-  try {
-    await login(passwordInput);
-    setIsAuthenticated(true);
-  } catch (e) {
-    alert("Invalid password");
-  }
-}
-
-if (!isAuthenticated) {
-  return (
-    <div className="loginPage">
-      <div className="loginCard">
-        <div className="loginTitle">Secure Access</div>
-        <input
-          type="password"
-          placeholder="Enter password"
-          value={passwordInput}
-          onChange={(e) => setPasswordInput(e.target.value)}
-          className="input"
-        />
-        <button className="btn primary" onClick={handleLogin}>
-          Login
-        </button>
+  // --------------------
+  // Auth UI
+  // --------------------
+  if (!authChecked) {
+    return (
+      <div className="authShell">
+        <div className="authCard">Loading…</div>
       </div>
-    </div>
-  );
-}
+    );
+  }
 
-  
+  if (!user) {
+    return (
+      <div className="authShell">
+        <div className="authCard">
+          <div className="authTitle">Sign in</div>
+          <div className="authSub">Enter your username and password.</div>
+
+          <input
+            className="authInput"
+            value={loginUser}
+            onChange={(e) => setLoginUser(e.target.value)}
+            placeholder="Username"
+            autoComplete="username"
+          />
+          <input
+            className="authInput"
+            type="password"
+            value={loginPass}
+            onChange={(e) => setLoginPass(e.target.value)}
+            placeholder="Password"
+            autoComplete="current-password"
+          />
+
+          {authError ? <div className="authError">{authError}</div> : null}
+
+          <button
+            className="btn primary"
+            onClick={doLogin}
+            disabled={!loginUser.trim() || !loginPass}
+          >
+            Sign in
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // --------------------
+  // Main App UI
+  // --------------------
   return (
     <div className="app">
       <div className="shell">
@@ -189,6 +262,13 @@ if (!isAuthenticated) {
           </div>
 
           <div className="headerRight">
+            <div className="userPill">
+              Signed in as <strong>{user.username}</strong>
+              <button className="linkBtn" onClick={doLogout}>
+                Log out
+              </button>
+            </div>
+
             <div className="statusPill" data-show={status ? "1" : "0"}>
               {status || " "}
             </div>
@@ -222,7 +302,11 @@ if (!isAuthenticated) {
             {poData && (
               <div className="field">
                 <div className="label">Product</div>
-                <select className="select" value={selectedId} onChange={(e) => onSelect(e.target.value)}>
+                <select
+                  className="select"
+                  value={selectedId}
+                  onChange={(e) => onSelect(e.target.value)}
+                >
                   <option value="">
                     {records.length ? "Select a product…" : "(no products found)"}
                   </option>
@@ -298,7 +382,9 @@ if (!isAuthenticated) {
                         <th className="c-edit"></th>
                         <th className="c-date"></th>
                         {sizes.map((s) => (
-                          <th key={s} className="c-size">{s}</th>
+                          <th key={s} className="c-size">
+                            {s}
+                          </th>
                         ))}
                         <th className="c-total">Total Units</th>
                         <th className="c-cost">Total Cost</th>
