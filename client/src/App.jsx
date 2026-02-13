@@ -13,12 +13,6 @@ import {
 
 const SIZES = ["XXS", "XS", "S", "M", "L", "XL"];
 const DEFAULT_LOCATIONS = ["Bogota", "Cedarhurst", "Toms River", "Teaneck Store", "Office", "Warehouse"];
-const [barcodeMap, setBarcodeMap] = useState({}); // barcode -> { size, inventoryItemId }
-
-const [showAlloc, setShowAlloc] = useState(false);
-const [showScan, setShowScan] = useState(false);
-
-
 
 function clampInt(v) {
   if (v === "" || v === null || v === undefined) return 0;
@@ -52,7 +46,11 @@ function emptyMatrix(locations, sizes) {
 
 function parseJsonOrNull(s) {
   if (!s) return null;
-  try { return JSON.parse(s); } catch { return null; }
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
 }
 
 function perSizeTotalsFromMatrix(matrix, locations, sizes) {
@@ -64,13 +62,34 @@ function perSizeTotalsFromMatrix(matrix, locations, sizes) {
 }
 
 function equalsPerSize(a, b, sizes) {
-  return sizes.every(s => Number(a?.[s] ?? 0) === Number(b?.[s] ?? 0));
+  return sizes.every((s) => Number(a?.[s] ?? 0) === Number(b?.[s] ?? 0));
 }
 
 function diffPerSize(a, b, sizes) {
   const d = {};
   for (const s of sizes) d[s] = Number(a?.[s] ?? 0) - Number(b?.[s] ?? 0);
   return d;
+}
+
+function normalizeSizeValue(val) {
+  if (!val) return null;
+  const s = String(val).trim().toUpperCase();
+  // accept common variants
+  if (s === "X-SMALL") return "XS";
+  if (s === "XX-SMALL") return "XXS";
+  if (s === "X SMALL") return "XS";
+  if (s === "XX SMALL") return "XXS";
+  return s;
+}
+
+function statusKind(message) {
+  const m = String(message || "").toLowerCase();
+  if (!m) return "info";
+  if (m.includes("fail") || m.includes("error") || m.includes("over") || m.includes("unauthorized"))
+    return "error";
+  if (m.includes("saved") || m.includes("linked") || m.includes("complete") || m.includes("download"))
+    return "success";
+  return "info";
 }
 
 export default function App() {
@@ -121,10 +140,10 @@ export default function App() {
   const [selectedId, setSelectedId] = useState("");
 
   const sizes = SIZES; // always show XXS..XL
-
   const records = poData?.records || [];
-  const selected = useMemo(() => records.find(r => r.id === selectedId) || null, [records, selectedId]);
+  const selected = useMemo(() => records.find((r) => r.id === selectedId) || null, [records, selectedId]);
 
+  // Totals fields
   const [shipEdits, setShipEdits] = useState(null);
   const [recEdits, setRecEdits] = useState(null);
   const [shipDate, setShipDate] = useState("");
@@ -152,16 +171,21 @@ export default function App() {
   const [alloc, setAlloc] = useState(() => emptyMatrix(DEFAULT_LOCATIONS, SIZES));
   const [scan, setScan] = useState(() => emptyMatrix(DEFAULT_LOCATIONS, SIZES));
 
-  // Shopify link
+  // Collapsible sections
+  const [showAlloc, setShowAlloc] = useState(false);
+  const [showScan, setShowScan] = useState(false);
+
+  // Shopify link + cached barcode map
   const [shopifyLinked, setShopifyLinked] = useState(false);
   const [shopifyProduct, setShopifyProduct] = useState(null); // {productId,title,variants}
   const [barcodeLinkInput, setBarcodeLinkInput] = useState("");
+  const [barcodeMap, setBarcodeMap] = useState({}); // barcode -> { size, inventoryItemId }
 
   // Receiving scan mode
   const [activeLoc, setActiveLoc] = useState(DEFAULT_LOCATIONS[0]);
   const [scanBarcode, setScanBarcode] = useState("");
   const scanInputRef = useRef(null);
-  const [lastScanStack, setLastScanStack] = useState([]); // {loc,size} stack
+  const [lastScanStack, setLastScanStack] = useState([]); // {loc,size}
 
   // Derived totals
   const unitCost = Number(selected?.unitCost ?? 0);
@@ -205,11 +229,12 @@ export default function App() {
       setPoData(data);
 
       if ((data.records || []).length === 1) {
-        const only = data.records[0];
-        setSelectedId(only.id);
+        setSelectedId(data.records[0].id);
       } else {
         setSelectedId("");
       }
+
+      if (!(data.records || []).length) setStatus("No records found for that PO #.");
     } catch (e) {
       setStatus(e.message);
     } finally {
@@ -217,7 +242,7 @@ export default function App() {
     }
   }
 
-  // When selecting a record, hydrate state including Alloc/Scan JSON
+  // Hydrate selection state
   useEffect(() => {
     if (!selected) return;
 
@@ -230,7 +255,6 @@ export default function App() {
     const a = parseJsonOrNull(selected.allocJson) || emptyMatrix(locations, sizes);
     const sc = parseJsonOrNull(selected.scanJson) || emptyMatrix(locations, sizes);
 
-    // Ensure all loc/sizes exist
     const normalizedA = emptyMatrix(locations, sizes);
     const normalizedS = emptyMatrix(locations, sizes);
 
@@ -246,39 +270,46 @@ export default function App() {
 
     setActiveLoc(locations[0] || DEFAULT_LOCATIONS[0]);
 
-    // unlink Shopify by default; user can link via barcode
+    // Shopify unlink by default when switching records (user can link again)
     setShopifyLinked(false);
     setShopifyProduct(null);
     setBarcodeLinkInput("");
+    setBarcodeMap({});
     setScanBarcode("");
     setLastScanStack([]);
+
+    // Collapse sections by default
+    setShowAlloc(false);
+    setShowScan(false);
+
+    setStatus("");
   }, [selectedId, locations]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function toggleEdit(mode) {
-    setEditMode(prev => (prev === mode ? "none" : mode));
+    setEditMode((prev) => (prev === mode ? "none" : mode));
   }
 
   function setShipCell(size, value) {
     const v = clampInt(value);
-    setShipEdits(prev => ({ ...(prev || {}), [size]: v }));
+    setShipEdits((prev) => ({ ...(prev || {}), [size]: v }));
   }
 
   function setRecCell(size, value) {
     const v = clampInt(value);
-    setRecEdits(prev => ({ ...(prev || {}), [size]: v }));
+    setRecEdits((prev) => ({ ...(prev || {}), [size]: v }));
   }
 
   // ---------- Allocation editing ----------
   function setAllocCell(loc, size, value) {
     const v = clampInt(value);
-    setAlloc(prev => ({
+    setAlloc((prev) => ({
       ...prev,
       [loc]: { ...(prev[loc] || {}), [size]: v }
     }));
   }
 
   function bumpAllocCell(loc, size, delta) {
-    setAlloc(prev => {
+    setAlloc((prev) => {
       const cur = Number(prev?.[loc]?.[size] ?? 0);
       const next = Math.max(0, cur + delta);
       return { ...prev, [loc]: { ...(prev[loc] || {}), [size]: next } };
@@ -299,108 +330,97 @@ export default function App() {
     }
   }
 
-  // ---------- Shopify linking ----------
-async function onLinkShopifyByBarcode() {
-  const bc = barcodeLinkInput.trim();
-  if (!bc) return;
+  // ---------- Shopify linking (loads barcodes ONCE) ----------
+  async function onLinkShopifyByBarcode() {
+    const bc = barcodeLinkInput.trim();
+    if (!bc) return;
 
-  try {
-    setLoading(true);
-    setStatus("Linking Shopify product…");
+    try {
+      setLoading(true);
+      setStatus("Linking Shopify product…");
 
-    const r = await shopifyByBarcode(bc);
-    if (!r.found) {
+      const r = await shopifyByBarcode(bc);
+      if (!r.found) {
+        setShopifyLinked(false);
+        setShopifyProduct(null);
+        setBarcodeMap({});
+        setStatus("Barcode not found in Shopify. You can continue without scanning.");
+        return;
+      }
+
+      setShopifyLinked(true);
+      setShopifyProduct(r.product);
+
+      // Build local barcode map once: barcode -> { size, inventoryItemId }
+      const map = {};
+      for (const v of r.product.variants || []) {
+        const b = String(v.barcode || "").trim();
+        if (!b) continue;
+        const size = normalizeSizeValue(v.sizeValue);
+        if (!size) continue;
+        map[b] = { size, inventoryItemId: v.inventoryItemId };
+      }
+      setBarcodeMap(map);
+
+      setShowScan(true); // open scan section once linked
+      setStatus(`Linked: ${r.product.title} (${Object.keys(map).length} barcodes loaded)`);
+      setTimeout(() => scanInputRef.current?.focus(), 50);
+    } catch (e) {
       setShopifyLinked(false);
       setShopifyProduct(null);
       setBarcodeMap({});
-      setStatus("Barcode not found in Shopify. Continue without scanning.");
+      setStatus(`Shopify link failed: ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // ---------- Receiving scan (local map; no Shopify lookup per scan) ----------
+  function onScanSubmit(e) {
+    e.preventDefault();
+    if (!shopifyLinked || !shopifyProduct) return;
+
+    const bc = scanBarcode.trim();
+    if (!bc) return;
+
+    const hit = barcodeMap[bc];
+    if (!hit) {
+      setStatus("Barcode not in this linked product. (Confirm item or re-link product.)");
       return;
     }
 
-    setShopifyLinked(true);
-    setShopifyProduct(r.product);
-
-    // Build local barcode lookup table ONCE
-    const map = {};
-    for (const v of r.product.variants || []) {
-      const b = String(v.barcode || "").trim();
-      if (!b) continue;
-
-      const size = normalizeSizeValue(v.sizeValue);
-      if (!size) continue;
-
-      map[b] = { size, inventoryItemId: v.inventoryItemId };
+    const size = hit.size;
+    if (!sizes.includes(size)) {
+      setStatus(`Scanned size "${size}" is not in the matrix.`);
+      return;
     }
-    setBarcodeMap(map);
 
-    setStatus(`Linked: ${r.product.title} (${Object.keys(map).length} barcodes loaded)`);
-    setTimeout(() => scanInputRef.current?.focus(), 50);
-  } catch (e) {
-    setShopifyLinked(false);
-    setShopifyProduct(null);
-    setBarcodeMap({});
-    setStatus(`Shopify link failed: ${e.message}`);
-  } finally {
-    setLoading(false);
+    // Over-allocation protection
+    const allocCap = Number(alloc?.[activeLoc]?.[size] ?? 0);
+    const cur = Number(scan?.[activeLoc]?.[size] ?? 0);
+
+    if (cur + 1 > allocCap) {
+      setStatus(`Over allocation: ${activeLoc} ${size} exceeds allocation (${allocCap}).`);
+      return;
+    }
+
+    setScan((prev) => ({
+      ...prev,
+      [activeLoc]: { ...(prev[activeLoc] || {}), [size]: cur + 1 }
+    }));
+    setLastScanStack((prev) => [...prev, { loc: activeLoc, size }]);
+
+    setScanBarcode("");
+    setStatus(`Scanned 1 → ${activeLoc} ${size}`);
+    setTimeout(() => scanInputRef.current?.focus(), 25);
   }
-}
-
-
-  function normalizeSizeValue(val) {
-    if (!val) return null;
-    const s = String(val).trim().toUpperCase();
-    // Accept common variants
-    if (s === "X-SMALL") return "XS";
-    if (s === "XX-SMALL") return "XXS";
-    return s;
-  }
-
-  // ---------- Receiving scan ----------
-async function onScanSubmit(e) {
-  e.preventDefault();
-  if (!shopifyLinked || !shopifyProduct) return;
-
-  const bc = scanBarcode.trim();
-  if (!bc) return;
-
-  const hit = barcodeMap[bc];
-  if (!hit) {
-    setStatus("Barcode not in this product. (Try linking again or confirm you’re scanning the correct item.)");
-    return;
-  }
-
-  const size = hit.size;
-  if (!sizes.includes(size)) {
-    setStatus(`Scanned size "${size}" not in matrix.`);
-    return;
-  }
-
-  const allocCap = Number(alloc?.[activeLoc]?.[size] ?? 0);
-  const cur = Number(scan?.[activeLoc]?.[size] ?? 0);
-
-  if (cur + 1 > allocCap) {
-    setStatus(`Over allocation: ${activeLoc} ${size} exceeds allocation (${allocCap}).`);
-    return;
-  }
-
-  setScan(prev => ({
-    ...prev,
-    [activeLoc]: { ...(prev[activeLoc] || {}), [size]: cur + 1 }
-  }));
-  setLastScanStack(prev => [...prev, { loc: activeLoc, size }]);
-
-  setScanBarcode("");
-  setStatus("Scan recorded ✅");
-  setTimeout(() => scanInputRef.current?.focus(), 25);
-}
-
 
   function undoLastScan() {
-    setLastScanStack(prev => {
+    setLastScanStack((prev) => {
       if (!prev.length) return prev;
       const last = prev[prev.length - 1];
 
-      setScan(cur => {
+      setScan((cur) => {
         const curVal = Number(cur?.[last.loc]?.[last.size] ?? 0);
         const nextVal = Math.max(0, curVal - 1);
         return {
@@ -429,17 +449,15 @@ async function onScanSubmit(e) {
     }
   }
 
-  // ---------- Closeout (Shopify + Airtable totals + PDF download) ----------
+  // ---------- Closeout + PDF ----------
   async function onCloseout() {
     if (!selectedId || !selected) return;
 
-    // Enforce allocation==ship before scanning closeout
     if (!allocMatchesShip) {
       setStatus("Allocation totals must match Ship Units before closeout.");
       return;
     }
 
-    // Enforce scan==allocation before submit (you can relax this later)
     if (!scanMatchesAlloc) {
       setStatus("Scanned totals must match Allocation before closeout.");
       return;
@@ -462,7 +480,6 @@ async function onScanSubmit(e) {
 
       const pdfBlob = await closeoutPdf(payload);
 
-      // download
       const url = URL.createObjectURL(pdfBlob);
       const a = document.createElement("a");
       a.href = url;
@@ -498,23 +515,20 @@ async function onScanSubmit(e) {
           <input className="authInput" value={u} onChange={(e) => setU(e.target.value)} placeholder="Username" />
           <input className="authInput" type="password" value={p} onChange={(e) => setP(e.target.value)} placeholder="Password" />
           {authError ? <div className="authError">{authError}</div> : null}
-          <button className="btn primary" onClick={doLogin} disabled={!u.trim() || !p}>Sign in</button>
+          <button className="btn primary" onClick={doLogin} disabled={!u.trim() || !p}>
+            Sign in
+          </button>
         </div>
       </div>
     );
   }
 
-  // ---------- Main UI ----------
+  const bannerType = statusKind(status);
+
   return (
     <div className="app">
       <div className="shell">
         <header className="header">
-          {status ? (
-  <div className={`banner ${status.toLowerCase().includes("fail") || status.toLowerCase().includes("error") || status.toLowerCase().includes("over") ? "bannerError" : "bannerInfo"}`}>
-    {status}
-  </div>
-) : null}
-
           <div className="brand">
             <div className="brandTitle">Shipping & Receiving</div>
             <div className="brandSub">PO → Product → Allocation → Scan → Closeout PDF</div>
@@ -523,24 +537,34 @@ async function onScanSubmit(e) {
           <div className="headerRight">
             <div className="userPill">
               Signed in as <strong>{user.username}</strong>
-              <button className="linkBtn" onClick={doLogout}>Log out</button>
+              <button className="linkBtn" onClick={doLogout}>
+                Log out
+              </button>
             </div>
-            <div className="statusPill" data-show={status ? "1" : "0"}>{status || " "}</div>
           </div>
         </header>
 
+        {status ? <div className={`banner ${bannerType}`}>{status}</div> : null}
+
         <div className="layout">
+          {/* LEFT */}
           <aside className="card lookup">
             <div className="cardTitle">Find</div>
 
             <div className="field">
               <div className="label">PO #</div>
               <div className="hstack">
-                <input className="input" value={poInput} onChange={(e) => setPoInput(e.target.value)} placeholder="e.g. YB1892" />
+                <input
+                  className="input"
+                  value={poInput}
+                  onChange={(e) => setPoInput(e.target.value)}
+                  placeholder="e.g. YB1892"
+                />
                 <button className="btn primary" onClick={onLoadPO} disabled={loading || !poInput.trim()}>
                   {loading ? "Loading…" : "Load"}
                 </button>
               </div>
+              <div className="hint">Tip: case doesn’t matter (yb1892 works).</div>
             </div>
 
             {poData && (
@@ -548,7 +572,11 @@ async function onScanSubmit(e) {
                 <div className="label">Product</div>
                 <select className="select" value={selectedId} onChange={(e) => setSelectedId(e.target.value)}>
                   <option value="">{records.length ? "Select a product…" : "(no products found)"}</option>
-                  {records.map(r => <option key={r.id} value={r.id}>{r.label}</option>)}
+                  {records.map((r) => (
+                    <option key={r.id} value={r.id}>
+                      {r.label}
+                    </option>
+                  ))}
                 </select>
               </div>
             )}
@@ -562,7 +590,9 @@ async function onScanSubmit(e) {
               </div>
               <div className="meta">
                 <div className="metaLabel">Allocation vs Ship</div>
-                <div className="metaValue">{selected ? (allocMatchesShip ? "OK" : "Mismatch") : "—"}</div>
+                <div className={`metaValue ${selected && !allocMatchesShip ? "badText" : ""}`}>
+                  {selected ? (allocMatchesShip ? "OK" : "Mismatch") : "—"}
+                </div>
               </div>
             </div>
 
@@ -584,12 +614,13 @@ async function onScanSubmit(e) {
               </div>
               <div className="hint">
                 {shopifyLinked && shopifyProduct
-                  ? `Linked: ${shopifyProduct.title}`
+                  ? `Linked: ${shopifyProduct.title} • ${Object.keys(barcodeMap).length} barcodes cached`
                   : "If not linked, scanning is disabled (manual entry still works)."}
               </div>
             </div>
           </aside>
 
+          {/* RIGHT */}
           <main className="card main">
             {!selected ? (
               <div className="emptyState">
@@ -607,7 +638,7 @@ async function onScanSubmit(e) {
                     </div>
                   </div>
 
-                  <div className="imageCardSm">
+                  <div className="imageCard">
                     {selected.imageUrl ? (
                       <img className="image" src={selected.imageUrl} alt="Product or Swatch" />
                     ) : (
@@ -616,7 +647,7 @@ async function onScanSubmit(e) {
                   </div>
                 </div>
 
-                {/* Buy/Ship/Rec */}
+                {/* Totals */}
                 <div className="sectionTitle">Totals</div>
                 <div className="tableCard">
                   <table className="matrix">
@@ -625,17 +656,26 @@ async function onScanSubmit(e) {
                         <th className="c-rowlabel"></th>
                         <th className="c-edit"></th>
                         <th className="c-date"></th>
-                        {sizes.map(s => <th key={s} className="c-size">{s}</th>)}
+                        {sizes.map((s) => (
+                          <th key={s} className="c-size">
+                            {s}
+                          </th>
+                        ))}
                         <th className="c-total">Total Units</th>
                         <th className="c-cost">Total Cost</th>
                       </tr>
                     </thead>
+
                     <tbody>
                       <tr>
                         <td className="rowLabel">Buy Units</td>
                         <td className="cellMuted">—</td>
                         <td className="cellMuted">—</td>
-                        {sizes.map(s => <td key={s} className="cellRead">{Number(selected.buy[s] ?? 0)}</td>)}
+                        {sizes.map((s) => (
+                          <td key={s} className="cellRead">
+                            {Number(selected.buy[s] ?? 0)}
+                          </td>
+                        ))}
                         <td className="cellRead strong">{buyTotalUnits}</td>
                         <td className="cellRead strong">{money(buyTotalCost)}</td>
                       </tr>
@@ -649,11 +689,23 @@ async function onScanSubmit(e) {
                           </label>
                         </td>
                         <td className="cellCenter">
-                          <input className="date" type="date" value={shipDate} onChange={(e) => setShipDate(e.target.value)} disabled={!shipEnabled} />
+                          <input
+                            className="date"
+                            type="date"
+                            value={shipDate}
+                            onChange={(e) => setShipDate(e.target.value)}
+                            disabled={!shipEnabled}
+                          />
                         </td>
-                        {sizes.map(s => (
+                        {sizes.map((s) => (
                           <td key={s}>
-                            <input className="qty" inputMode="numeric" value={shipEdits?.[s] ?? 0} onChange={(e) => setShipCell(s, e.target.value)} disabled={!shipEnabled} />
+                            <input
+                              className="qty"
+                              inputMode="numeric"
+                              value={shipEdits?.[s] ?? 0}
+                              onChange={(e) => setShipCell(s, e.target.value)}
+                              disabled={!shipEnabled}
+                            />
                           </td>
                         ))}
                         <td className="cellRead strong">{shipTotalUnits}</td>
@@ -669,11 +721,23 @@ async function onScanSubmit(e) {
                           </label>
                         </td>
                         <td className="cellCenter">
-                          <input className="date" type="date" value={delivery} onChange={(e) => setDelivery(e.target.value)} disabled={!recEnabled} />
+                          <input
+                            className="date"
+                            type="date"
+                            value={delivery}
+                            onChange={(e) => setDelivery(e.target.value)}
+                            disabled={!recEnabled}
+                          />
                         </td>
-                        {sizes.map(s => (
+                        {sizes.map((s) => (
                           <td key={s}>
-                            <input className="qty" inputMode="numeric" value={recEdits?.[s] ?? 0} onChange={(e) => setRecCell(s, e.target.value)} disabled={!recEnabled} />
+                            <input
+                              className="qty"
+                              inputMode="numeric"
+                              value={recEdits?.[s] ?? 0}
+                              onChange={(e) => setRecCell(s, e.target.value)}
+                              disabled={!recEnabled}
+                            />
                           </td>
                         ))}
                         <td className="cellRead strong">{recTotalUnits}</td>
@@ -683,90 +747,135 @@ async function onScanSubmit(e) {
                   </table>
                 </div>
 
-                {/* Allocation */}
-                <div className="sectionTitleRow">
-                  <div className="sectionTitle">Allocation Guide</div>
-                  <div className="sectionRight">
-                    <button className="btn" onClick={onSaveAllocation} disabled={loading || !selectedId}>
-                      Save Allocation
-                    </button>
-                    <div className="hint">
-                      {allocMatchesShip ? "Allocation totals match Ship Units ✅" : "Allocation totals must match Ship Units"}
+                {/* Allocation accordion */}
+                <div className="accordion">
+                  <button className="accordionHead" type="button" onClick={() => setShowAlloc((v) => !v)}>
+                    <div>
+                      <div className="accordionTitle">Allocation Guide</div>
+                      <div className={`accordionSub ${allocMatchesShip ? "okText" : "badText"}`}>
+                        {allocMatchesShip ? "Totals match Ship Units" : "Totals must match Ship Units"}
+                      </div>
                     </div>
-                  </div>
-                </div>
-
-                <AllocationMatrix
-                  locations={locations}
-                  sizes={sizes}
-                  alloc={alloc}
-                  setAllocCell={setAllocCell}
-                  bumpAllocCell={bumpAllocCell}
-                  shipTotalsBySize={shipTotalsBySize}
-                  allocTotalsBySize={allocTotalsBySize}
-                />
-
-                {/* Receiving */}
-                <div className="sectionTitleRow">
-                  <div className="sectionTitle">Receiving Scan</div>
-                  <div className="sectionRight">
-                    <button className="btn" onClick={onSaveScanToAirtable} disabled={loading || !selectedId}>
-                      Save Scan Progress
-                    </button>
-                  </div>
-                </div>
-
-                <div className="scanBar">
-                  <div className="scanLeft">
-                    <div className="labelSmall">Active location</div>
-                    <select className="select" value={activeLoc} onChange={(e) => setActiveLoc(e.target.value)}>
-                      {locations.map(l => <option key={l} value={l}>{l}</option>)}
-                    </select>
-                  </div>
-
-                  <div className="scanMid">
-                    <div className="labelSmall">Scan barcode</div>
-                    <form onSubmit={onScanSubmit} className="scanForm">
-                      <input
-                        ref={scanInputRef}
-                        className="input"
-                        value={scanBarcode}
-                        onChange={(e) => setScanBarcode(e.target.value)}
-                        placeholder={shopifyLinked ? "Scan variant barcode…" : "Link Shopify product to enable scanning"}
-                        disabled={!shopifyLinked || loading}
-                      />
-                      <button className="btn primary" disabled={!shopifyLinked || loading || !scanBarcode.trim()}>
-                        Add Scan
-                      </button>
-                      <button className="btn" type="button" onClick={undoLastScan} disabled={!lastScanStack.length}>
-                        Undo last scan
-                      </button>
-                    </form>
-                  </div>
-
-                  <div className="scanRight">
-                    <div className="labelSmall">Status</div>
-                    <div className={`pill ${scanMatchesAlloc ? "ok" : "warn"}`}>
-                      {scanMatchesAlloc ? "Scan matches allocation" : "Scan differs from allocation"}
-                    </div>
-                  </div>
-                </div>
-
-                <ScanMatrix
-                  locations={locations}
-                  sizes={sizes}
-                  alloc={alloc}
-                  scan={scan}
-                  setScan={setScan}
-                />
-
-                <div className="actionsRow">
-                  <button className="btn primary" onClick={onCloseout} disabled={loading || !selectedId || !allocMatchesShip || !scanMatchesAlloc}>
-                    Submit Closeout + Download PDF
+                    <div className="chev">{showAlloc ? "▾" : "▸"}</div>
                   </button>
-                  <div className="actionsNote">
-                    Requires Allocation=Ship and Scan=Allocation. Shopify inventory adjusts only if Shopify is linked.
-                  </div>
+
+                  {showAlloc ? (
+                    <div className="accordionBody">
+                      <AllocationMatrix
+                        locations={locations}
+                        sizes={sizes}
+                        alloc={alloc}
+                        setAllocCell={setAllocCell}
+                        bumpAllocCell={bumpAllocCell}
+                        shipTotalsBySize={shipTotalsBySize}
+                        allocTotalsBySize={allocTotalsBySize}
+                      />
+
+                      <div className="rowActions">
+                        <button className="btn primary" onClick={onSaveAllocation} disabled={loading || !selectedId}>
+                          Save Allocation
+                        </button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+
+                {/* Receiving accordion */}
+                <div className="accordion">
+                  <button className="accordionHead" type="button" onClick={() => setShowScan((v) => !v)}>
+                    <div>
+                      <div className="accordionTitle">Receiving Scan</div>
+                      <div className={`accordionSub ${scanMatchesAlloc ? "okText" : "badText"}`}>
+                        {scanMatchesAlloc ? "Scan matches allocation" : "Scan differs from allocation"}
+                      </div>
+                    </div>
+                    <div className="chev">{showScan ? "▾" : "▸"}</div>
+                  </button>
+
+                  {showScan ? (
+                    <div className="accordionBody">
+                      {/* Location buttons */}
+                      <div className="locBar">
+                        <div className="locTitle">Select Location</div>
+                        <div className="locButtons">
+                          {locations.map((l) => (
+                            <button
+                              key={l}
+                              type="button"
+                              className={`locBtn ${activeLoc === l ? "active" : ""}`}
+                              onClick={() => {
+                                setActiveLoc(l);
+                                setTimeout(() => scanInputRef.current?.focus(), 25);
+                              }}
+                            >
+                              {l}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* Scan row */}
+                      <div className="scanCard">
+                        <div className="scanHeader">
+                          <div className="scanHeaderTitle">Scan Barcode</div>
+                          <div className="scanHeaderMeta">
+                            Active: <span className="tag">{activeLoc}</span>
+                            {!shopifyLinked ? <span className="tag warn">Link Shopify to scan</span> : null}
+                          </div>
+                        </div>
+
+                        <form className="scanForm" onSubmit={onScanSubmit}>
+                          <input
+                            ref={scanInputRef}
+                            className="input scanInput"
+                            value={scanBarcode}
+                            onChange={(e) => setScanBarcode(e.target.value)}
+                            placeholder={
+                              shopifyLinked
+                                ? "Scan variant barcode…"
+                                : "Scanning disabled until Shopify product is linked"
+                            }
+                            disabled={!shopifyLinked || loading}
+                          />
+                          <button className="btn primary" disabled={!shopifyLinked || loading || !scanBarcode.trim()}>
+                            Add
+                          </button>
+                          <button className="btn" type="button" onClick={undoLastScan} disabled={!lastScanStack.length}>
+                            Undo
+                          </button>
+                          <button className="btn" type="button" onClick={onSaveScanToAirtable} disabled={loading || !selectedId}>
+                            Save Progress
+                          </button>
+                        </form>
+
+                        <div className="scanHint">
+                          Scans increment 1 unit at a time into the <strong>active location</strong>. Scan matrix is also manually editable.
+                        </div>
+                      </div>
+
+                      {/* Matrices */}
+                      <div className="subTitle">Allocation</div>
+                      <AllocationReadOnly locations={locations} sizes={sizes} alloc={alloc} />
+
+                      <div className="subTitle">Scanned</div>
+                      <ScanMatrixEditable locations={locations} sizes={sizes} alloc={alloc} scan={scan} setScan={setScan} />
+
+                      <div className="actionsRow">
+                        <button
+                          className="btn primary"
+                          onClick={onCloseout}
+                          disabled={loading || !selectedId || !allocMatchesShip || !scanMatchesAlloc}
+                          type="button"
+                        >
+                          Submit Closeout + Download PDF
+                        </button>
+
+                        <div className="actionsNote">
+                          Requires <strong>Allocation=Ship</strong> and <strong>Scan=Allocation</strong>. Shopify inventory adjusts only if Shopify is linked.
+                        </div>
+                      </div>
+                    </div>
+                  ) : null}
                 </div>
               </>
             )}
@@ -777,6 +886,8 @@ async function onScanSubmit(e) {
   );
 }
 
+/* ---------------- Components ---------------- */
+
 function AllocationMatrix({ locations, sizes, alloc, setAllocCell, bumpAllocCell, shipTotalsBySize, allocTotalsBySize }) {
   const diffs = useMemo(() => diffPerSize(allocTotalsBySize, shipTotalsBySize, sizes), [allocTotalsBySize, shipTotalsBySize, sizes]);
 
@@ -786,22 +897,20 @@ function AllocationMatrix({ locations, sizes, alloc, setAllocCell, bumpAllocCell
         <thead>
           <tr>
             <th className="c-loc">Location</th>
-            {sizes.map(s => (
-              <th key={s} className={`c-size2 ${diffs[s] !== 0 ? "bad" : ""}`}>
-                {s}
-              </th>
+            {sizes.map((s) => (
+              <th key={s} className={`c-size2 ${diffs[s] !== 0 ? "badHead" : ""}`}>{s}</th>
             ))}
-            <th className="c-rowtotal">Row Total</th>
+            <th className="c-rowtotal">Total</th>
           </tr>
         </thead>
 
         <tbody>
-          {locations.map(loc => {
+          {locations.map((loc) => {
             const rowTotal = sizes.reduce((a, s) => a + Number(alloc?.[loc]?.[s] ?? 0), 0);
             return (
               <tr key={loc}>
                 <td className="locCell">{loc}</td>
-                {sizes.map(s => (
+                {sizes.map((s) => (
                   <td key={s}>
                     <div className="cellStepper">
                       <button className="step" onClick={() => bumpAllocCell(loc, s, -1)} type="button">−</button>
@@ -822,7 +931,7 @@ function AllocationMatrix({ locations, sizes, alloc, setAllocCell, bumpAllocCell
 
           <tr className="totRow">
             <td className="locCell strong">TOTAL</td>
-            {sizes.map(s => (
+            {sizes.map((s) => (
               <td key={s} className={`cellRead strong ${diffs[s] !== 0 ? "badCell" : ""}`}>
                 {allocTotalsBySize[s]}
                 {diffs[s] !== 0 ? <div className="tiny">Δ {diffs[s]}</div> : null}
@@ -838,13 +947,8 @@ function AllocationMatrix({ locations, sizes, alloc, setAllocCell, bumpAllocCell
   );
 }
 
-function ScanMatrix({ locations, sizes, alloc, scan, setScan }) {
-  const setScanCell = (loc, size, value) => {
-    const v = clampInt(value);
-    setScan(prev => ({ ...prev, [loc]: { ...(prev[loc] || {}), [size]: v } }));
-  };
-
-  const diffsPerCell = (loc, size) => Number(scan?.[loc]?.[size] ?? 0) - Number(alloc?.[loc]?.[size] ?? 0);
+function AllocationReadOnly({ locations, sizes, alloc }) {
+  const totals = useMemo(() => perSizeTotalsFromMatrix(alloc, locations, sizes), [alloc, locations, sizes]);
 
   return (
     <div className="tableCard">
@@ -852,19 +956,63 @@ function ScanMatrix({ locations, sizes, alloc, scan, setScan }) {
         <thead>
           <tr>
             <th className="c-loc">Location</th>
-            {sizes.map(s => <th key={s} className="c-size2">{s}</th>)}
-            <th className="c-rowtotal">Row Total</th>
+            {sizes.map((s) => <th key={s} className="c-size2">{s}</th>)}
+            <th className="c-rowtotal">Total</th>
           </tr>
         </thead>
 
         <tbody>
-          {locations.map(loc => {
+          {locations.map((loc) => {
+            const rowTotal = sizes.reduce((a, s) => a + Number(alloc?.[loc]?.[s] ?? 0), 0);
+            return (
+              <tr key={loc}>
+                <td className="locCell">{loc}</td>
+                {sizes.map((s) => (
+                  <td key={s} className="cellRead">{Number(alloc?.[loc]?.[s] ?? 0)}</td>
+                ))}
+                <td className="cellRead strong">{rowTotal}</td>
+              </tr>
+            );
+          })}
+
+          <tr className="totRow">
+            <td className="locCell strong">TOTAL</td>
+            {sizes.map((s) => <td key={s} className="cellRead strong">{totals[s]}</td>)}
+            <td className="cellRead strong">{sizes.reduce((a, s) => a + Number(totals[s] ?? 0), 0)}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function ScanMatrixEditable({ locations, sizes, alloc, scan, setScan }) {
+  const setScanCell = (loc, size, value) => {
+    const v = clampInt(value);
+    setScan((prev) => ({ ...prev, [loc]: { ...(prev[loc] || {}), [size]: v } }));
+  };
+
+  const diffCell = (loc, size) => Number(scan?.[loc]?.[size] ?? 0) - Number(alloc?.[loc]?.[size] ?? 0);
+
+  return (
+    <div className="tableCard">
+      <table className="matrix2">
+        <thead>
+          <tr>
+            <th className="c-loc">Location</th>
+            {sizes.map((s) => <th key={s} className="c-size2">{s}</th>)}
+            <th className="c-rowtotal">Total</th>
+          </tr>
+        </thead>
+
+        <tbody>
+          {locations.map((loc) => {
             const rowTotal = sizes.reduce((a, s) => a + Number(scan?.[loc]?.[s] ?? 0), 0);
             return (
               <tr key={loc}>
                 <td className="locCell">{loc}</td>
-                {sizes.map(s => {
-                  const d = diffsPerCell(loc, s);
+                {sizes.map((s) => {
+                  const d = diffCell(loc, s);
                   return (
                     <td key={s} className={d > 0 ? "badCell" : ""}>
                       <input
@@ -873,7 +1021,7 @@ function ScanMatrix({ locations, sizes, alloc, scan, setScan }) {
                         value={scan?.[loc]?.[s] ?? 0}
                         onChange={(e) => setScanCell(loc, s, e.target.value)}
                       />
-                      {d > 0 ? <div className="tiny">Over by {d}</div> : null}
+                      {d > 0 ? <div className="tiny">Over {d}</div> : null}
                     </td>
                   );
                 })}
@@ -883,8 +1031,9 @@ function ScanMatrix({ locations, sizes, alloc, scan, setScan }) {
           })}
         </tbody>
       </table>
-      <div className="hint" style={{ padding: "10px 12px" }}>
-        Scan cells should never exceed allocation. Manual edits are allowed for now.
+
+      <div className="foot">
+        Manual edits are allowed. Over-allocation highlights appear when scanned &gt; allocation.
       </div>
     </div>
   );
