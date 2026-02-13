@@ -13,6 +13,12 @@ import {
 
 const SIZES = ["XXS", "XS", "S", "M", "L", "XL"];
 const DEFAULT_LOCATIONS = ["Bogota", "Cedarhurst", "Toms River", "Teaneck Store", "Office", "Warehouse"];
+const [barcodeMap, setBarcodeMap] = useState({}); // barcode -> { size, inventoryItemId }
+
+const [showAlloc, setShowAlloc] = useState(false);
+const [showScan, setShowScan] = useState(false);
+
+
 
 function clampInt(v) {
   if (v === "" || v === null || v === undefined) return 0;
@@ -294,35 +300,51 @@ export default function App() {
   }
 
   // ---------- Shopify linking ----------
-  async function onLinkShopifyByBarcode() {
-    const bc = barcodeLinkInput.trim();
-    if (!bc) return;
+async function onLinkShopifyByBarcode() {
+  const bc = barcodeLinkInput.trim();
+  if (!bc) return;
 
-    try {
-      setLoading(true);
-      setStatus("Looking up barcode in Shopify…");
-      const r = await shopifyByBarcode(bc);
+  try {
+    setLoading(true);
+    setStatus("Linking Shopify product…");
 
-      if (!r.found) {
-        setShopifyLinked(false);
-        setShopifyProduct(null);
-        setStatus("Barcode not found in Shopify. You can continue without scanning.");
-        return;
-      }
-
-      setShopifyLinked(true);
-      setShopifyProduct(r.product);
-      setStatus(`Linked Shopify product: ${r.product.title}`);
-      // focus scan input
-      setTimeout(() => scanInputRef.current?.focus(), 50);
-    } catch (e) {
+    const r = await shopifyByBarcode(bc);
+    if (!r.found) {
       setShopifyLinked(false);
       setShopifyProduct(null);
-      setStatus(`Shopify lookup failed: ${e.message}`);
-    } finally {
-      setLoading(false);
+      setBarcodeMap({});
+      setStatus("Barcode not found in Shopify. Continue without scanning.");
+      return;
     }
+
+    setShopifyLinked(true);
+    setShopifyProduct(r.product);
+
+    // Build local barcode lookup table ONCE
+    const map = {};
+    for (const v of r.product.variants || []) {
+      const b = String(v.barcode || "").trim();
+      if (!b) continue;
+
+      const size = normalizeSizeValue(v.sizeValue);
+      if (!size) continue;
+
+      map[b] = { size, inventoryItemId: v.inventoryItemId };
+    }
+    setBarcodeMap(map);
+
+    setStatus(`Linked: ${r.product.title} (${Object.keys(map).length} barcodes loaded)`);
+    setTimeout(() => scanInputRef.current?.focus(), 50);
+  } catch (e) {
+    setShopifyLinked(false);
+    setShopifyProduct(null);
+    setBarcodeMap({});
+    setStatus(`Shopify link failed: ${e.message}`);
+  } finally {
+    setLoading(false);
   }
+}
+
 
   function normalizeSizeValue(val) {
     if (!val) return null;
@@ -334,56 +356,44 @@ export default function App() {
   }
 
   // ---------- Receiving scan ----------
-  async function onScanSubmit(e) {
-    e.preventDefault();
-    if (!shopifyLinked || !shopifyProduct) return;
+async function onScanSubmit(e) {
+  e.preventDefault();
+  if (!shopifyLinked || !shopifyProduct) return;
 
-    const bc = scanBarcode.trim();
-    if (!bc) return;
+  const bc = scanBarcode.trim();
+  if (!bc) return;
 
-    try {
-      setLoading(true);
-      setStatus("Scanning…");
-
-      const r = await shopifyByBarcode(bc);
-      if (!r.found) {
-        setStatus("Barcode not found in Shopify.");
-        return;
-      }
-
-      // size from the scanned variant’s "Size"
-      // We already return full product; easiest is: find variant with barcode
-      const v = (r.product.variants || []).find(x => String(x.barcode || "").trim() === bc);
-      const size = normalizeSizeValue(v?.sizeValue);
-      if (!size || !sizes.includes(size)) {
-        setStatus(`Scanned size "${v?.sizeValue}" does not match app sizes.`);
-        return;
-      }
-
-      // Check allocation limit: scan[activeLoc][size] + 1 <= alloc[activeLoc][size]
-      const allocCap = Number(alloc?.[activeLoc]?.[size] ?? 0);
-      const cur = Number(scan?.[activeLoc]?.[size] ?? 0);
-
-      if (cur + 1 > allocCap) {
-        setStatus(`Over allocation: ${activeLoc} ${size} would exceed allocation (${allocCap}).`);
-        // keep lastScanStack unchanged; allow undo if previous scan existed
-        return;
-      }
-
-      setScan(prev => ({
-        ...prev,
-        [activeLoc]: { ...(prev[activeLoc] || {}), [size]: cur + 1 }
-      }));
-      setLastScanStack(prev => [...prev, { loc: activeLoc, size }]);
-      setScanBarcode("");
-      setStatus("Scan recorded ✅");
-    } catch (e2) {
-      setStatus(`Scan failed: ${e2.message}`);
-    } finally {
-      setLoading(false);
-      setTimeout(() => scanInputRef.current?.focus(), 25);
-    }
+  const hit = barcodeMap[bc];
+  if (!hit) {
+    setStatus("Barcode not in this product. (Try linking again or confirm you’re scanning the correct item.)");
+    return;
   }
+
+  const size = hit.size;
+  if (!sizes.includes(size)) {
+    setStatus(`Scanned size "${size}" not in matrix.`);
+    return;
+  }
+
+  const allocCap = Number(alloc?.[activeLoc]?.[size] ?? 0);
+  const cur = Number(scan?.[activeLoc]?.[size] ?? 0);
+
+  if (cur + 1 > allocCap) {
+    setStatus(`Over allocation: ${activeLoc} ${size} exceeds allocation (${allocCap}).`);
+    return;
+  }
+
+  setScan(prev => ({
+    ...prev,
+    [activeLoc]: { ...(prev[activeLoc] || {}), [size]: cur + 1 }
+  }));
+  setLastScanStack(prev => [...prev, { loc: activeLoc, size }]);
+
+  setScanBarcode("");
+  setStatus("Scan recorded ✅");
+  setTimeout(() => scanInputRef.current?.focus(), 25);
+}
+
 
   function undoLastScan() {
     setLastScanStack(prev => {
@@ -499,6 +509,12 @@ export default function App() {
     <div className="app">
       <div className="shell">
         <header className="header">
+          {status ? (
+  <div className={`banner ${status.toLowerCase().includes("fail") || status.toLowerCase().includes("error") || status.toLowerCase().includes("over") ? "bannerError" : "bannerInfo"}`}>
+    {status}
+  </div>
+) : null}
+
           <div className="brand">
             <div className="brandTitle">Shipping & Receiving</div>
             <div className="brandSub">PO → Product → Allocation → Scan → Closeout PDF</div>
