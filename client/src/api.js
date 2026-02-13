@@ -1,17 +1,14 @@
-export async function fetchPO(po) {
-  const res = await fetch(`/api/po/${encodeURIComponent(po)}`);
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.error || "Failed to load PO");
-  return data;
-}
-
-export async function saveRecord(recordId, payload) {
-  const res = await fetch(`/api/record/${encodeURIComponent(recordId)}`, {
-    method: "PATCH",
+export async function login(password) {
+  const res = await fetch("/api/login", {
+    method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(payload)
+    body: JSON.stringify({ password })
   });
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.error || "Failed to save");
-  return data;
+
+  if (!res.ok) {
+    const data = await res.json();
+    throw new Error(data.error || "Login failed");
+  }
+
+  return res.json();
 }
