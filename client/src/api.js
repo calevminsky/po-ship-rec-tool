@@ -16,13 +16,19 @@ export async function saveRecord(recordId, payload) {
   return data;
 }
 
-export async function login(password) {
+export async function me() {
+  const res = await fetch("/api/me");
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error || "Not logged in");
+  return data; // { ok, user, authEnabled }
+}
+
+export async function login(username, password) {
   const res = await fetch("/api/login", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ password })
+    body: JSON.stringify({ username, password })
   });
-
   const data = await res.json();
   if (!res.ok) throw new Error(data?.error || "Login failed");
   return data;
