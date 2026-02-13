@@ -5,6 +5,11 @@ import cookieParser from "cookie-parser";
 import { listRecordsByPO, updateRecord, getSizes, AIRTABLE_FIELDS } from "./airtable.js";
 import { getLocations, lookupVariantByBarcode, fetchProductVariants, adjustInventoryQuantities } from "./shopify.js";
 import { buildCloseoutPdf } from "./pdf.js";
+import { buildAuthorizeUrl, exchangeCodeForToken, loadTokenFromDisk, makeState, saveTokenToDisk } from "./shopifyAuth.js";
+
+let SHOPIFY_ACCESS_TOKEN = loadTokenFromDisk(); // memory cache
+let OAUTH_STATE = null;
+
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
