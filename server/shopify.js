@@ -140,7 +140,7 @@ async function inventoryActivate(inventoryItemId, locationId) {
 
 // Adjust inventory quantities by delta
 export async function adjustInventoryQuantities({
-  name = "po-ship-rec-tool",
+  name = "available",
   reason = "correction",
   changes = []
 }) {
