@@ -251,6 +251,48 @@ app.post("/api/closeout", requireAuth, async (req, res) => {
 });
 
 
+
+
+import { getShopifyAccessToken } from "./shopifyTokenStore.js";
+
+app.get("/api/shopify/debug-locations", requireAuth, async (req, res) => {
+  try {
+    const token = getShopifyAccessToken();
+    const shop = process.env.SHOPIFY_SHOP;
+    const ver = process.env.SHOPIFY_API_VERSION || "2025-01";
+
+    const query = `
+      query {
+        locations(first: 50) {
+          edges {
+            node {
+              id
+              name
+            }
+          }
+        }
+      }
+    `;
+
+    const r = await fetch(`https://${shop}/admin/api/${ver}/graphql.json`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-Shopify-Access-Token": token,
+      },
+      body: JSON.stringify({ query }),
+    });
+
+    const j = await r.json();
+    res.json(j);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+
+
+
 app.use(express.static(clientDist));
 
 
