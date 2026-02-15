@@ -131,6 +131,39 @@ app.patch("/api/record/:id/save-allocation", requireAuth, async (req, res) => {
   }
 });
 
+// ---- Save Ship + Ship Date ----
+app.patch("/api/record/:id/save-ship", requireAuth, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const { shipDate, shipTotals } = req.body || {};
+
+    // shipTotals should be an object like { XXS: 1, XS: 2, ... }
+    if (typeof shipTotals !== "object" || shipTotals === null) {
+      return res.status(400).json({ error: "shipTotals must be an object" });
+    }
+
+    const sizes = getSizes();
+    const patch = {};
+
+    // Ship date (optional)
+    if (shipDate !== undefined) {
+      // Airtable accepts YYYY-MM-DD for date fields
+      patch[AIRTABLE_FIELDS.SHIP_DATE_FIELD] = shipDate || null;
+    }
+
+    // Per-size ship quantities
+    for (const s of sizes) {
+      patch[`Ship_${s}`] = Number(shipTotals?.[s] ?? 0);
+    }
+
+    const updated = await updateRecord(id, patch);
+    res.json({ ok: true, updated });
+  } catch (e) {
+    res.status(500).json({ error: e.message || "Server error" });
+  }
+});
+
+
 // ---- Save Scan + Rec totals ----
 app.patch("/api/record/:id/save-scan", requireAuth, async (req, res) => {
   try {
