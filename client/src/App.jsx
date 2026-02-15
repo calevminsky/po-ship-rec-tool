@@ -9,6 +9,8 @@ import {
   saveAllocation,
   saveScan,
   shopifyByBarcode,
+  shopifyByProductId,
+  linkShopifyProduct,
   closeoutPdf
 } from "./api.js";
 
@@ -82,6 +84,10 @@ function statusKind(message) {
 function money(n) {
   const x = Number(n ?? 0);
   return x.toLocaleString(undefined, { style: "currency", currency: "USD" });
+}
+
+function sumPerSize(obj, sizes) {
+  return sizes.reduce((a, s) => a + Number(obj?.[s] ?? 0), 0);
 }
 
 export default function App() {
@@ -167,7 +173,7 @@ export default function App() {
   const scanInputRef = useRef(null);
   const [lastScanStack, setLastScanStack] = useState([]);
 
-  // Shopify link (Mode 3 only)
+  // Shopify link (auto if Airtable already has product gid)
   const [shopifyLinked, setShopifyLinked] = useState(false);
   const [shopifyProduct, setShopifyProduct] = useState(null);
   const [barcodeLinkInput, setBarcodeLinkInput] = useState("");
@@ -175,6 +181,12 @@ export default function App() {
 
   // Derived
   const unitCost = Number(selected?.unitCost ?? 0);
+
+  const buyTotalsBySize = useMemo(() => {
+    const t = {};
+    for (const s of sizes) t[s] = Number(selected?.buy?.[s] ?? 0);
+    return t;
+  }, [selected, sizes]);
 
   const shipTotalsBySize = useMemo(() => {
     const t = {};
@@ -219,6 +231,40 @@ export default function App() {
     }
   }
 
+  function buildBarcodeMapFromProduct(product) {
+    const map = {};
+    for (const v of product?.variants || []) {
+      const b = String(v.barcode || "").trim();
+      if (!b) continue;
+      const size = normalizeSizeValue(v.sizeValue);
+      if (!size) continue;
+      map[b] = { size, inventoryItemId: v.inventoryItemId };
+    }
+    return map;
+  }
+
+  async function autoLoadShopifyIfLinked(record) {
+    const gid = record?.shopifyProductGid;
+    if (!gid) return;
+    try {
+      setLoading(true);
+      setStatus("Loading linked Shopify product…");
+      const r = await shopifyByProductId(gid);
+      setShopifyLinked(true);
+      setShopifyProduct(r.product);
+      setBarcodeMap(buildBarcodeMapFromProduct(r.product));
+      setStatus(`Linked Shopify loaded: ${r.product?.title || "Product"} ✅`);
+    } catch (e) {
+      // Don’t hard-fail the user; just show a message.
+      setShopifyLinked(false);
+      setShopifyProduct(null);
+      setBarcodeMap({});
+      setStatus(`Could not load linked Shopify product: ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   // Hydrate selection
   useEffect(() => {
     if (!selected) return;
@@ -255,7 +301,11 @@ export default function App() {
     setLastScanStack([]);
 
     setStatus("");
-  }, [selectedId, locations]); // eslint-disable-line react-hooks/exhaustive-deps
+
+    // Auto-load Shopify if Airtable already has GID
+    autoLoadShopifyIfLinked(selected);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedId, locations]);
 
   function setShipCell(size, value) {
     const v = clampInt(value);
@@ -307,7 +357,6 @@ export default function App() {
   async function onSaveAllocation() {
     if (!selectedId) return;
 
-    // Warn if mismatch, allow submit anyway
     if (!allocMatchesShip) {
       const diffs = diffPerSize(allocTotalsBySize, shipTotalsBySize, sizes);
       const msg =
@@ -330,44 +379,40 @@ export default function App() {
     }
   }
 
-  // ---------- Mode 3: Shopify linking ----------
-  async function onLinkShopifyByBarcode() {
+  // ---------- Mode 2: Link Shopify product and write GID to Airtable ----------
+  async function onLinkShopifyAndPersist() {
     const bc = barcodeLinkInput.trim();
-    if (!bc) return;
+    if (!bc || !selectedId) return;
 
     try {
       setLoading(true);
-      setStatus("Linking Shopify product…");
+      setStatus("Finding Shopify product…");
 
       const r = await shopifyByBarcode(bc);
       if (!r.found) {
-        setShopifyLinked(false);
-        setShopifyProduct(null);
-        setBarcodeMap({});
-        setStatus("Barcode not found in Shopify. You can continue without scanning.");
+        setStatus("Barcode not found in Shopify.");
         return;
       }
 
+      const productId = r.product.productId;
+
+      setStatus("Writing Shopify Product GID to Airtable…");
+      await linkShopifyProduct(selectedId, productId);
+
       setShopifyLinked(true);
       setShopifyProduct(r.product);
+      setBarcodeMap(buildBarcodeMapFromProduct(r.product));
+      setStatus(`Linked + saved ✅ ${r.product.title}`);
 
-      const map = {};
-      for (const v of r.product.variants || []) {
-        const b = String(v.barcode || "").trim();
-        if (!b) continue;
-        const size = normalizeSizeValue(v.sizeValue);
-        if (!size) continue;
-        map[b] = { size, inventoryItemId: v.inventoryItemId };
+      // Optional: refresh PO data so the record carries the saved gid in UI too
+      if (poData?.po) {
+        const refreshed = await fetchPO(poData.po);
+        setPoData(refreshed);
       }
-      setBarcodeMap(map);
 
-      setStatus(`Linked: ${r.product.title} (${Object.keys(map).length} barcodes loaded)`);
       setTimeout(() => scanInputRef.current?.focus(), 50);
     } catch (e) {
-      setShopifyLinked(false);
-      setShopifyProduct(null);
-      setBarcodeMap({});
-      setStatus(`Shopify link failed: ${e.message}`);
+      setStatus(`Link failed: ${e.message}`);
     } finally {
       setLoading(false);
     }
@@ -383,11 +428,7 @@ export default function App() {
 
     const hit = barcodeMap[bc];
     if (!hit) {
-      const ok = window.confirm(
-        "This barcode is NOT part of the linked Shopify product.\n\n" +
-          "Press OK to ignore (no scan), or Cancel to keep scanning."
-      );
-      if (ok) setStatus("Barcode not in linked product (ignored).");
+      window.alert("This barcode is NOT part of the linked Shopify product.");
       return;
     }
 
@@ -402,8 +443,7 @@ export default function App() {
 
     if (cur + 1 > allocCap) {
       const ok = window.confirm(
-        `Over allocation for ${activeLoc} ${size}.\n\n` +
-          `Allocated: ${allocCap}\nScanned would become: ${cur + 1}\n\nOverride and allow anyway?`
+        `Over allocation for ${activeLoc} ${size}.\n\nAllocated: ${allocCap}\nScanned would become: ${cur + 1}\n\nOverride and allow anyway?`
       );
       if (!ok) {
         setStatus(`Over allocation blocked: ${activeLoc} ${size} (alloc ${allocCap})`);
@@ -460,16 +500,12 @@ export default function App() {
     if (!selectedId || !selected) return;
 
     if (!allocMatchesShip) {
-      const ok = window.confirm(
-        "Allocation does NOT match Ship Units.\n\nSubmit closeout anyway?\n\n(You will still get a PDF; Shopify adjust uses scanned totals.)"
-      );
+      const ok = window.confirm("Allocation does NOT match Ship Units.\n\nSubmit closeout anyway?");
       if (!ok) return;
     }
 
     if (!scanMatchesAlloc) {
-      const ok = window.confirm(
-        "Scanned totals do NOT match Allocation.\n\nSubmit closeout anyway?\n\n(You will still get a PDF; Shopify adjust uses scanned totals.)"
-      );
+      const ok = window.confirm("Scanned totals do NOT match Allocation.\n\nSubmit closeout anyway?");
       if (!ok) return;
     }
 
@@ -600,7 +636,7 @@ export default function App() {
                       onKeyDown={(e) => {
                         if (e.key === "Enter") onLoadPO();
                       }}
-                      placeholder="e.g. YB1892"
+                      placeholder="Scan or type PO (e.g. YB1892)"
                     />
                     <button className="btn primary" onClick={onLoadPO} disabled={loading || !poInput.trim()}>
                       {loading ? "Loading…" : "Load"}
@@ -622,31 +658,52 @@ export default function App() {
                   </div>
                 )}
 
-                {mode === "receiving" ? (
+                {/* Link step is now available in Allocation + Receiving */}
+                {selected && (mode === "allocation" || mode === "receiving") ? (
                   <>
                     <div className="divider" />
                     <div className="field">
-                      <div className="label">Link Shopify (needed to scan)</div>
-                      <div className="hstack">
-                        <input
-                          className="input"
-                          value={barcodeLinkInput}
-                          onChange={(e) => setBarcodeLinkInput(e.target.value)}
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") onLinkShopifyByBarcode();
-                          }}
-                          placeholder="Scan/enter ANY variant barcode…"
-                          disabled={!selected}
-                        />
-                        <button className="btn" onClick={onLinkShopifyByBarcode} disabled={!selected || loading || !barcodeLinkInput.trim()}>
-                          Link
-                        </button>
-                      </div>
-                      <div className="hint">
-                        {shopifyLinked && shopifyProduct
-                          ? `Linked: ${shopifyProduct.title} • ${Object.keys(barcodeMap).length} barcodes loaded`
-                          : "Not linked yet (scanning disabled)."}
-                      </div>
+                      <div className="label">Shopify Link (one-time per product)</div>
+
+                      {selected.shopifyProductGid ? (
+                        <div className="hint">
+                          ✅ Linked in Airtable: <strong>{selected.shopifyProductGid}</strong>
+                          <div style={{ marginTop: 8 }}>
+                            <button
+                              className="btn"
+                              onClick={() => autoLoadShopifyIfLinked(selected)}
+                              disabled={loading}
+                              type="button"
+                            >
+                              Refresh Shopify Variants
+                            </button>
+                          </div>
+                        </div>
+                      ) : (
+                        <>
+                          <div className="hstack">
+                            <input
+                              className="input"
+                              value={barcodeLinkInput}
+                              onChange={(e) => setBarcodeLinkInput(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") onLinkShopifyAndPersist();
+                              }}
+                              placeholder="Scan/enter ANY variant barcode…"
+                              disabled={!selected}
+                            />
+                            <button
+                              className="btn"
+                              onClick={onLinkShopifyAndPersist}
+                              disabled={!selected || loading || !barcodeLinkInput.trim()}
+                              type="button"
+                            >
+                              Link
+                            </button>
+                          </div>
+                          <div className="hint">This writes the Shopify Product GID to Airtable so it auto-loads next time.</div>
+                        </>
+                      )}
                     </div>
                   </>
                 ) : null}
@@ -674,6 +731,8 @@ export default function App() {
                     <div className="productBadges">
                       <span className="badge">Unit Cost: {money(unitCost)}</span>
                       <span className="badge subtle">PO: {poData?.po}</span>
+                      <span className="badge subtle">Buy: {sumPerSize(buyTotalsBySize, sizes)}</span>
+                      <span className="badge subtle">Ship: {sumPerSize(shipTotalsBySize, sizes)}</span>
                     </div>
                   </div>
 
@@ -685,7 +744,7 @@ export default function App() {
                 {mode === "shipping" ? (
                   <>
                     <div className="sectionTitle">Mode 1 — Shipping</div>
-                    <div className="hint">Enter ship date + shipped units. This saves back to Airtable.</div>
+                    <div className="hint">Enter ship date + shipped units. Buy is shown for reference.</div>
 
                     <div className="shipBlock">
                       <div className="shipRow">
@@ -694,18 +753,30 @@ export default function App() {
                       </div>
 
                       <div className="tableCard">
-                        <table className="matrix2">
+                        <table className="matrix2 matrixSimple">
                           <thead>
                             <tr>
+                              <th className="c-loc"> </th>
                               {sizes.map((s) => (
                                 <th key={s} className="c-size2">
                                   {s}
                                 </th>
                               ))}
+                              <th className="c-rowtotal">Total</th>
                             </tr>
                           </thead>
                           <tbody>
                             <tr>
+                              <td className="locCell subtleRow">Buy</td>
+                              {sizes.map((s) => (
+                                <td key={s} className="cellRead">
+                                  {Number(selected.buy?.[s] ?? 0)}
+                                </td>
+                              ))}
+                              <td className="cellRead strong">{sumPerSize(buyTotalsBySize, sizes)}</td>
+                            </tr>
+                            <tr>
+                              <td className="locCell">Ship</td>
                               {sizes.map((s) => (
                                 <td key={s}>
                                   <input
@@ -716,6 +787,7 @@ export default function App() {
                                   />
                                 </td>
                               ))}
+                              <td className="cellRead strong">{sumPerSize(shipTotalsBySize, sizes)}</td>
                             </tr>
                           </tbody>
                         </table>
@@ -733,10 +805,29 @@ export default function App() {
                 {mode === "allocation" ? (
                   <>
                     <div className="sectionTitle">Mode 2 — Allocation</div>
-                    <div className="hint">Sizes are columns. Locations are rows. Totals should match Ship Units.</div>
+                    <div className="hint">Allocate shipped units across locations (sizes=columns, locations=rows).</div>
+
+                    <div className="summaryBar">
+                      <div className="summaryPill">
+                        <div className="summaryLabel">Buy</div>
+                        <div className="summaryValue">{sumPerSize(buyTotalsBySize, sizes)}</div>
+                      </div>
+                      <div className="summaryPill">
+                        <div className="summaryLabel">Ship</div>
+                        <div className="summaryValue">{sumPerSize(shipTotalsBySize, sizes)}</div>
+                      </div>
+                      <div className="summaryPill">
+                        <div className="summaryLabel">Allocated</div>
+                        <div className="summaryValue">{sumPerSize(allocTotalsBySize, sizes)}</div>
+                      </div>
+                      <div className={`summaryPill ${allocMatchesShip ? "okSoft" : "badSoft"}`}>
+                        <div className="summaryLabel">Ship Match</div>
+                        <div className="summaryValue">{allocMatchesShip ? "Yes" : "No"}</div>
+                      </div>
+                    </div>
 
                     <div className="modeTools">
-                      <button className="btn" onClick={() => setAllocEdit((v) => !v)}>
+                      <button className="btn" onClick={() => setAllocEdit((v) => !v)} type="button">
                         {allocEdit ? "Done Editing" : "Edit Allocation"}
                       </button>
                       <div className={`modeFlag ${allocMatchesShip ? "okText" : "badText"}`}>
@@ -756,7 +847,7 @@ export default function App() {
                     />
 
                     <div className="rowActions">
-                      <button className="btn primary" onClick={onSaveAllocation} disabled={loading || !selectedId}>
+                      <button className="btn primary" onClick={onSaveAllocation} disabled={loading || !selectedId} type="button">
                         Submit Allocation
                       </button>
                     </div>
@@ -766,9 +857,7 @@ export default function App() {
                 {mode === "receiving" ? (
                   <>
                     <div className="sectionTitle">Mode 3 — Receiving</div>
-                    <div className="hint">
-                      Select a location, then scan into that location. Cells show <strong>Allocated</strong> and <strong>Scanned</strong>.
-                    </div>
+                    <div className="hint">Select a location, then scan. You can’t miss what’s allocated vs scanned.</div>
 
                     <div className="locBar">
                       <div className="locTitle">Selected Location</div>
@@ -807,7 +896,7 @@ export default function App() {
                           placeholder={shopifyLinked ? "Scan variant barcode…" : "Scanning disabled until Shopify is linked"}
                           disabled={!shopifyLinked || loading}
                         />
-                        <button className="btn primary" disabled={!shopifyLinked || loading || !scanBarcode.trim()}>
+                        <button className="btn primary" disabled={!shopifyLinked || loading || !scanBarcode.trim()} type="submit">
                           Add
                         </button>
                         <button className="btn" type="button" onClick={undoLastScan} disabled={!lastScanStack.length}>
@@ -821,12 +910,12 @@ export default function App() {
                         </button>
                       </form>
 
-                      <div className="scanHint">
-                        Tip: Keep the scanner cursor in the scan box. If you over-scan, you’ll get a warning + optional override.
-                      </div>
+                      <div className="scanHint">Tip: keep the scanner cursor in the scan box. Overscans prompt for override.</div>
                     </div>
 
-                    <ReceivingMatrix
+                    <ActiveLocSummary activeLoc={activeLoc} sizes={sizes} alloc={alloc} scan={scan} />
+
+                    <ReceivingMatrixClean
                       locations={locations}
                       sizes={sizes}
                       alloc={alloc}
@@ -842,9 +931,7 @@ export default function App() {
                         Submit Closeout + Download PDF
                       </button>
 
-                      <div className="actionsNote">
-                        You’ll get warnings if Allocation≠Ship or Scan≠Allocation, but you can still submit if needed.
-                      </div>
+                      <div className="actionsNote">Warnings appear if Allocation≠Ship or Scan≠Allocation, but you can still submit if needed.</div>
                     </div>
                   </>
                 ) : null}
@@ -888,12 +975,7 @@ function AllocationMatrix({ locations, sizes, alloc, shipTotalsBySize, allocTota
                   return (
                     <td key={s}>
                       <div className={`cellStepper ${edit ? "" : "compact"}`}>
-                        <input
-                          className="qty2"
-                          inputMode="numeric"
-                          value={v}
-                          onChange={(e) => setAllocCell(loc, s, e.target.value)}
-                        />
+                        <input className="qty2" inputMode="numeric" value={v} onChange={(e) => setAllocCell(loc, s, e.target.value)} />
                         {edit ? (
                           <>
                             <button className="step" type="button" onClick={() => bumpAllocCell(loc, s, -1)}>
@@ -929,10 +1011,47 @@ function AllocationMatrix({ locations, sizes, alloc, shipTotalsBySize, allocTota
   );
 }
 
-function ReceivingMatrix({ locations, sizes, alloc, scan, activeLoc, edit, setScanCell, bumpScanCell }) {
+function ActiveLocSummary({ activeLoc, sizes, alloc, scan }) {
+  const items = sizes.map((s) => {
+    const a = Number(alloc?.[activeLoc]?.[s] ?? 0);
+    const v = Number(scan?.[activeLoc]?.[s] ?? 0);
+    const over = v > a;
+    const done = a > 0 && v === a;
+    return { s, a, v, over, done };
+  });
+
+  const totalA = items.reduce((x, it) => x + it.a, 0);
+  const totalV = items.reduce((x, it) => x + it.v, 0);
+
+  return (
+    <div className="summaryPanel">
+      <div className="summaryPanelTop">
+        <div className="summaryPanelTitle">Allocation vs Scanned — {activeLoc}</div>
+        <div className="summaryPanelTotals">
+          <span className="tag">Allocated: {totalA}</span>
+          <span className="tag">Scanned: {totalV}</span>
+        </div>
+      </div>
+
+      <div className="sizeCards">
+        {items.map((it) => (
+          <div key={it.s} className={`sizeCard ${it.over ? "badSoft" : it.done ? "okSoft" : ""}`}>
+            <div className="sizeCardTop">
+              <div className="sizeName">{it.s}</div>
+              <div className={`sizeDelta ${it.over ? "badText" : ""}`}>{it.v}/{it.a}</div>
+            </div>
+            <div className="sizeSub">Scanned / Allocated</div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function ReceivingMatrixClean({ locations, sizes, alloc, scan, activeLoc, edit, setScanCell, bumpScanCell }) {
   return (
     <div className="tableCard">
-      <table className="matrix2">
+      <table className="matrix2 matrixClean">
         <thead>
           <tr>
             <th className="c-loc">Location</th>
@@ -963,14 +1082,12 @@ function ReceivingMatrix({ locations, sizes, alloc, scan, activeLoc, edit, setSc
 
                   return (
                     <td key={s} className={over ? "badCell" : ""}>
-                      <div className={`recvCell ${isActive ? "recvActive" : ""}`}>
-                        <div className="recvTop">
-                          <span className="recvAlloc">Alloc {a}</span>
-                          <span className={`recvScan ${over ? "badText" : ""}`}>Scanned {v}</span>
-                        </div>
+                      <div className={`cellStack ${isActive ? "cellStackActive" : ""}`}>
+                        <div className={`bigNum ${over ? "badText" : ""}`}>{v}</div>
+                        <div className="smallSub">of {a}</div>
 
                         {edit ? (
-                          <div className="recvEdit">
+                          <div className="editRow">
                             <input className="qty2" inputMode="numeric" value={v} onChange={(e) => setScanCell(loc, s, e.target.value)} />
                             <button className="step" type="button" onClick={() => bumpScanCell(loc, s, -1)}>
                               –
