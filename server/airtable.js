@@ -4,7 +4,7 @@ const token = process.env.AIRTABLE_TOKEN;
 const baseId = process.env.AIRTABLE_BASE_ID;
 const table = process.env.AIRTABLE_TABLE_NAME || "Products";
 
-const sizes = (process.env.SIZES || "XXS,XS,S,M,L,XL").split(",").map(s => s.trim());
+const sizes = (process.env.SIZES || "XXS,XS,S,M,L,XL").split(",").map((s) => s.trim());
 
 const PO_FIELD = process.env.AIRTABLE_PO_FIELD || "PO #";
 const ATTACH_FIELD = process.env.AIRTABLE_IMAGE_FIELD || "Product or Swatch";
@@ -15,8 +15,14 @@ const DELIVERY_FIELD = process.env.AIRTABLE_DELIVERY_FIELD || "Delivery";
 const ALLOC_FIELD = process.env.AIRTABLE_ALLOC_FIELD || "Alloc_JSON";
 const SCAN_FIELD = process.env.AIRTABLE_SCAN_FIELD || "Scan_JSON";
 
+// NEW: field in Airtable to store Shopify Product GID
+// Example value: gid://shopify/Product/1234567890
+const SHOPIFY_PRODUCT_GID_FIELD = process.env.AIRTABLE_SHOPIFY_PRODUCT_GID_FIELD || "Shopify_Product_GID";
+
 const LABEL_FIELDS = (process.env.AIRTABLE_DISPLAY_FIELDS || "Product,Style,Color,Vendor")
-  .split(",").map(s => s.trim()).filter(Boolean);
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 function headers() {
   if (!token) throw new Error("Missing AIRTABLE_TOKEN");
@@ -55,6 +61,8 @@ export async function listRecordsByPO(po) {
   params.append("fields[]", DELIVERY_FIELD);
   params.append("fields[]", ALLOC_FIELD);
   params.append("fields[]", SCAN_FIELD);
+  params.append("fields[]", SHOPIFY_PRODUCT_GID_FIELD);
+
   for (const f of LABEL_FIELDS) params.append("fields[]", f);
 
   for (const s of sizes) {
@@ -72,9 +80,11 @@ export async function listRecordsByPO(po) {
   return {
     po,
     sizes,
-    records: (data.records || []).map(r => {
+    records: (data.records || []).map((r) => {
       const f = r.fields || {};
-      const buy = {}, ship = {}, rec = {};
+      const buy = {},
+        ship = {},
+        rec = {};
       for (const s of sizes) {
         buy[s] = Number(f[`Buy_${s}`] ?? 0);
         ship[s] = Number(f[`Ship_${s}`] ?? 0);
@@ -90,7 +100,10 @@ export async function listRecordsByPO(po) {
         delivery: f[DELIVERY_FIELD] ?? null,
         allocJson: f[ALLOC_FIELD] ?? null,
         scanJson: f[SCAN_FIELD] ?? null,
-        buy, ship, rec
+        shopifyProductGid: f[SHOPIFY_PRODUCT_GID_FIELD] ?? null,
+        buy,
+        ship,
+        rec
       };
     })
   };
@@ -117,5 +130,6 @@ export const AIRTABLE_FIELDS = {
   SHIP_DATE_FIELD,
   DELIVERY_FIELD,
   ALLOC_FIELD,
-  SCAN_FIELD
+  SCAN_FIELD,
+  SHOPIFY_PRODUCT_GID_FIELD
 };
