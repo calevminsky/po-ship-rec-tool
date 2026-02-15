@@ -8,7 +8,7 @@ import { getLocations, lookupVariantByBarcode, fetchProductVariants, adjustInven
 import { buildCloseoutPdf } from "./pdf.js";
 
 import { buildAuthorizeUrl, exchangeCodeForToken, makeState } from "./shopifyAuth.js";
-import { setShopifyAccessToken, hasShopifyAccessToken } from "./shopifyTokenStore.js";
+import { setShopifyAccessToken, hasShopifyAccessToken, getShopifyAccessToken } from "./shopifyTokenStore.js";
 
 let OAUTH_STATE = null;
 
@@ -72,7 +72,7 @@ app.post("/api/logout", (req, res) => {
 });
 
 // -------------------- SHOPIFY OAUTH --------------------
-// Start OAuth
+// Start OAuth (you can keep this, even if you eventually move to a fixed token)
 app.get("/api/shopify/auth", requireAuth, (req, res) => {
   OAUTH_STATE = makeState();
   const url = buildAuthorizeUrl(OAUTH_STATE);
@@ -137,7 +137,6 @@ app.patch("/api/record/:id/save-ship", requireAuth, async (req, res) => {
     const id = req.params.id;
     const { shipDate, shipTotals } = req.body || {};
 
-    // shipTotals should be an object like { XXS: 1, XS: 2, ... }
     if (typeof shipTotals !== "object" || shipTotals === null) {
       return res.status(400).json({ error: "shipTotals must be an object" });
     }
@@ -145,13 +144,10 @@ app.patch("/api/record/:id/save-ship", requireAuth, async (req, res) => {
     const sizes = getSizes();
     const patch = {};
 
-    // Ship date (optional)
     if (shipDate !== undefined) {
-      // Airtable accepts YYYY-MM-DD for date fields
       patch[AIRTABLE_FIELDS.SHIP_DATE_FIELD] = shipDate || null;
     }
 
-    // Per-size ship quantities
     for (const s of sizes) {
       patch[`Ship_${s}`] = Number(shipTotals?.[s] ?? 0);
     }
@@ -162,7 +158,6 @@ app.patch("/api/record/:id/save-ship", requireAuth, async (req, res) => {
     res.status(500).json({ error: e.message || "Server error" });
   }
 });
-
 
 // ---- Save Scan + Rec totals ----
 app.patch("/api/record/:id/save-scan", requireAuth, async (req, res) => {
@@ -183,7 +178,7 @@ app.patch("/api/record/:id/save-scan", requireAuth, async (req, res) => {
   }
 });
 
-// ---- Shopify barcode lookup ----
+// ---- Shopify barcode lookup (returns product + variants) ----
 app.get("/api/shopify/barcode/:barcode", requireAuth, async (req, res) => {
   try {
     const barcode = (req.params.barcode || "").trim();
@@ -205,6 +200,40 @@ app.get("/api/shopify/barcode/:barcode", requireAuth, async (req, res) => {
     });
   } catch (e) {
     res.status(500).json({ error: e.message || "Shopify lookup error" });
+  }
+});
+
+// ---- NEW: Shopify product fetch by productId ----
+app.get("/api/shopify/product/:productId", requireAuth, async (req, res) => {
+  try {
+    const productId = (req.params.productId || "").trim();
+    if (!productId) return res.status(400).json({ error: "Missing productId" });
+
+    const product = await fetchProductVariants(productId);
+    res.json({
+      ok: true,
+      product: {
+        productId: product.productId,
+        title: product.title,
+        variants: product.variants
+      }
+    });
+  } catch (e) {
+    res.status(500).json({ error: e.message || "Shopify product fetch error" });
+  }
+});
+
+// ---- NEW: Link Airtable record to Shopify product (writes Product GID into Airtable) ----
+app.patch("/api/record/:id/link-shopify-product", requireAuth, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const { productId } = req.body || {};
+    if (!productId || typeof productId !== "string") return res.status(400).json({ error: "productId is required" });
+
+    const updated = await updateRecord(id, { [AIRTABLE_FIELDS.SHOPIFY_PRODUCT_GID_FIELD]: productId });
+    res.json({ ok: true, updated });
+  } catch (e) {
+    res.status(500).json({ error: e.message || "Server error" });
   }
 });
 
@@ -253,16 +282,15 @@ app.post("/api/closeout", requireAuth, async (req, res) => {
         }
       }
 
-const result = await adjustInventoryQuantities({
-  name: "available",        // <-- REQUIRED now; must be one of the allowed values
-  reason: "correction",
-  changes
-});
+      const result = await adjustInventoryQuantities({
+        name: "available",
+        reason: "correction",
+        changes
+      });
 
       shopifyResult = result;
 
       if (!result.ok) {
-        // return real Shopify info to the client
         return res.status(400).json({ error: "Shopify inventory adjust failed", shopify: result });
       }
     }
@@ -288,11 +316,7 @@ const result = await adjustInventoryQuantities({
   }
 });
 
-
-
-
-import { getShopifyAccessToken } from "./shopifyTokenStore.js";
-
+// Debug route (kept)
 app.get("/api/shopify/debug-locations", requireAuth, async (req, res) => {
   try {
     const token = getShopifyAccessToken();
@@ -316,9 +340,9 @@ app.get("/api/shopify/debug-locations", requireAuth, async (req, res) => {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "X-Shopify-Access-Token": token,
+        "X-Shopify-Access-Token": token
       },
-      body: JSON.stringify({ query }),
+      body: JSON.stringify({ query })
     });
 
     const j = await r.json();
@@ -328,11 +352,7 @@ app.get("/api/shopify/debug-locations", requireAuth, async (req, res) => {
   }
 });
 
-
-
-
 app.use(express.static(clientDist));
-
 
 // ---- Static client ----
 app.use(express.static(clientDist));
