@@ -65,6 +65,20 @@ export async function shopifyByBarcode(barcode) {
   return j(res);
 }
 
+export async function shopifyByProductId(productId) {
+  const res = await fetch(`/api/shopify/product/${encodeURIComponent(productId)}`);
+  return j(res);
+}
+
+export async function linkShopifyProduct(recordId, productId) {
+  const res = await fetch(`/api/record/${encodeURIComponent(recordId)}/link-shopify-product`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ productId })
+  });
+  return j(res);
+}
+
 export async function closeoutPdf(payload) {
   const res = await fetch("/api/closeout", {
     method: "POST",
