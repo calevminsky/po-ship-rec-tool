@@ -164,6 +164,7 @@ export async function adjustInventoryQuantities({ reason = "correction", changes
   }
 
   const input = {
+    name,
     reason,
     changes: changes.map((c) => ({
       inventoryItemId: c.inventoryItemId,
