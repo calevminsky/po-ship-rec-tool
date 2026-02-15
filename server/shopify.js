@@ -1,28 +1,17 @@
-import { getShopifyAccessToken } from "./shopifyAuth.js";
+import { getShopifyAccessToken } from "./shopifyTokenStore.js";
 
-const LOCATIONS = [
-  { name: "Bogota", id: "20363018337" },
-  { name: "Cedarhurst", id: "31679414369" },
-  { name: "Toms River", id: "62070161505" },
-  { name: "Teaneck Store", id: "33027424353" },
-  { name: "Office", id: "69648253025" },
-  { name: "Warehouse", id: "68496293985" }
-];
+const SHOP = process.env.SHOPIFY_SHOP; // yakirabella.myshopify.com
+const API_VERSION = process.env.SHOPIFY_API_VERSION || "2025-01";
 
-export function getLocations() {
-  return LOCATIONS;
-}
-
-function gid(type, numericId) {
-  return `gid://shopify/${type}/${numericId}`;
+function gqlEndpoint() {
+  if (!SHOP) throw new Error("Missing SHOPIFY_SHOP env var");
+  return `https://${SHOP}/admin/api/${API_VERSION}/graphql.json`;
 }
 
 async function shopifyGraphQL(query, variables) {
-  const shop = process.env.SHOPIFY_STORE_DOMAIN;
-  const version = process.env.SHOPIFY_API_VERSION || "2024-10";
-  const token = await getShopifyAccessToken();
+  const token = getShopifyAccessToken();
 
-  const res = await fetch(`https://${shop}/admin/api/${version}/graphql.json`, {
+  const resp = await fetch(gqlEndpoint(), {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -31,115 +20,170 @@ async function shopifyGraphQL(query, variables) {
     body: JSON.stringify({ query, variables })
   });
 
-  const data = await res.json();
-  if (!res.ok) throw new Error(`Shopify GraphQL error: ${JSON.stringify(data)}`);
-  if (data.errors?.length) throw new Error(`Shopify GraphQL errors: ${JSON.stringify(data.errors)}`);
-  return data.data;
+  const json = await resp.json().catch(() => ({}));
+  return { ok: resp.ok, status: resp.status, json };
 }
 
-/**
- * Lookup variant by barcode.
- * Returns:
- *  - productTitle
- *  - productId
- *  - variantId
- *  - inventoryItemId
- *  - sizeValue (from selectedOptions where name === "Size")
- */
+function extractUserErrors(json) {
+  // common shape: json.data.<mutation>.userErrors
+  if (!json?.data) return [];
+  const key = Object.keys(json.data)[0];
+  const obj = json.data[key];
+  return obj?.userErrors || [];
+}
+
+// Your fixed mapping of store locations -> Shopify Location GIDs
+// IMPORTANT: l.id must be a GID like gid://shopify/Location/12345
+const LOCATIONS = [
+  { name: "Bogota", id: "gid://shopify/Location/0000000000" },
+  { name: "Cedarhurst", id: "gid://shopify/Location/0000000000" },
+  { name: "Toms River", id: "gid://shopify/Location/0000000000" },
+  { name: "Teaneck Store", id: "gid://shopify/Location/0000000000" },
+  { name: "Office", id: "gid://shopify/Location/0000000000" },
+  { name: "Warehouse", id: "gid://shopify/Location/0000000000" }
+];
+
+export function getLocations() {
+  return LOCATIONS;
+}
+
+// Lookup variant by barcode -> returns { productId, variantId }
 export async function lookupVariantByBarcode(barcode) {
   const q = `
-    query($q: String!) {
+    query VariantByBarcode($q: String!) {
       productVariants(first: 1, query: $q) {
-        nodes {
-          id
-          barcode
-          product { id title }
-          inventoryItem { id }
-          selectedOptions { name value }
-        }
-      }
-    }
-  `;
-
-  const data = await shopifyGraphQL(q, { q: `barcode:${barcode}` });
-  const v = data?.productVariants?.nodes?.[0];
-  if (!v) return null;
-
-  const sizeOpt = (v.selectedOptions || []).find(o => o.name === "Size");
-  return {
-    barcode: v.barcode,
-    productTitle: v.product?.title || "",
-    productId: v.product?.id || null,
-    variantId: v.id,
-    inventoryItemId: v.inventoryItem?.id || null,
-    sizeValue: sizeOpt?.value || null
-  };
-}
-
-/**
- * Fetch all variants for a product (for size→inventoryItem mapping)
- */
-export async function fetchProductVariants(productId) {
-  const q = `
-    query($id: ID!) {
-      product(id: $id) {
-        id
-        title
-        variants(first: 250) {
-          nodes {
+        edges {
+          node {
             id
             barcode
-            inventoryItem { id }
-            selectedOptions { name value }
+            product { id }
           }
         }
       }
     }
   `;
-  const data = await shopifyGraphQL(q, { id: productId });
-  const p = data?.product;
+
+  const { ok, status, json } = await shopifyGraphQL(q, { q: `barcode:${barcode}` });
+
+  if (!ok || json.errors) {
+    throw new Error(`Shopify barcode lookup failed (${status}): ${JSON.stringify(json.errors || json)}`);
+  }
+
+  const edge = json?.data?.productVariants?.edges?.[0];
+  if (!edge?.node) return null;
+
+  return {
+    variantId: edge.node.id,
+    productId: edge.node.product.id
+  };
+}
+
+// Fetch all variants for a product with barcode + size option value + inventoryItemId
+export async function fetchProductVariants(productId) {
+  const q = `
+    query ProductVariants($id: ID!) {
+      product(id: $id) {
+        id
+        title
+        variants(first: 250) {
+          edges {
+            node {
+              id
+              barcode
+              inventoryItem { id }
+              selectedOptions { name value }
+            }
+          }
+        }
+      }
+    }
+  `;
+
+  const { ok, status, json } = await shopifyGraphQL(q, { id: productId });
+
+  if (!ok || json.errors) {
+    throw new Error(`Shopify product fetch failed (${status}): ${JSON.stringify(json.errors || json)}`);
+  }
+
+  const p = json?.data?.product;
   if (!p) throw new Error("Product not found in Shopify");
 
-  const variants = (p.variants?.nodes || []).map(v => {
-    const sizeOpt = (v.selectedOptions || []).find(o => o.name === "Size");
+  const variants = (p.variants?.edges || []).map(({ node }) => {
+    const sizeOpt = (node.selectedOptions || []).find((o) => String(o.name || "").toLowerCase() === "size");
     return {
-      variantId: v.id,
-      barcode: v.barcode,
-      inventoryItemId: v.inventoryItem?.id || null,
-      sizeValue: sizeOpt?.value || null
+      variantId: node.id,
+      barcode: node.barcode || "",
+      sizeValue: sizeOpt?.value || "",
+      inventoryItemId: node.inventoryItem?.id || ""
     };
   });
 
   return { productId: p.id, title: p.title, variants };
 }
 
-/**
- * Adjust inventory by deltas per location.
- * changes: [{ inventoryItemId (gid), locationId (numeric), delta }]
- */
-export async function adjustInventoryQuantities({ reason = "correction", changes = [] }) {
-  if (!changes.length) return { ok: true, userErrors: [] };
-
-  const mutation = `
-    mutation($input: InventoryAdjustQuantitiesInput!) {
-      inventoryAdjustQuantities(input: $input) {
+// Ensure an inventory item is stocked at a location (otherwise adjust fails)
+async function inventoryActivate(inventoryItemId, locationId) {
+  const m = `
+    mutation Activate($inventoryItemId: ID!, $locationId: ID!) {
+      inventoryActivate(inventoryItemId: $inventoryItemId, locationId: $locationId) {
+        inventoryLevel { id }
         userErrors { field message }
-        inventoryAdjustmentGroup { id createdAt }
       }
     }
   `;
 
+  const { ok, status, json } = await shopifyGraphQL(m, { inventoryItemId, locationId });
+  const userErrors = extractUserErrors(json);
+
+  return { ok: ok && !json.errors && userErrors.length === 0, status, json, userErrors };
+}
+
+// Adjust inventory quantities by delta
+export async function adjustInventoryQuantities({ reason = "correction", changes = [] }) {
+  if (!Array.isArray(changes) || changes.length === 0) return { ok: true, skipped: true };
+
+  // Try activate + adjust; collect errors per change for debugging
+  const results = [];
+  const errors = [];
+
+  // Newer inventory mutation style uses changes array. (This matches your “delta” requirement.)
+  const m = `
+    mutation Adjust($input: InventoryAdjustQuantitiesInput!) {
+      inventoryAdjustQuantities(input: $input) {
+        inventoryAdjustmentGroup { id }
+        userErrors { field message }
+      }
+    }
+  `;
+
+  // Before adjust, activate each inventory item at each location (safe + prevents common failure)
+  for (const c of changes) {
+    const a = await inventoryActivate(c.inventoryItemId, c.locationId);
+    results.push({ step: "activate", ...c, ok: a.ok, userErrors: a.userErrors, status: a.status });
+    // activation can error harmlessly if already stocked; we don’t hard-fail here
+  }
+
   const input = {
     reason,
-    name: "available",
-    changes: changes.map(c => ({
+    changes: changes.map((c) => ({
       inventoryItemId: c.inventoryItemId,
-      locationId: gid("Location", c.locationId),
-      delta: c.delta
+      locationId: c.locationId,
+      delta: Number(c.delta || 0)
     }))
   };
 
-  const data = await shopifyGraphQL(mutation, { input });
-  const userErrors = data?.inventoryAdjustQuantities?.userErrors || [];
-  return { ok: userErrors.length === 0, userErrors, result: data?.inventoryAdjustQuantities || null };
+  const { ok, status, json } = await shopifyGraphQL(m, { input });
+  const userErrors = extractUserErrors(json);
+
+  if (!ok || json.errors || userErrors.length) {
+    errors.push({
+      step: "adjust",
+      status,
+      errors: json.errors || null,
+      userErrors
+    });
+    return { ok: false, status, errors, debug: { results, response: json } };
+  }
+
+  return { ok: true, status, debug: { results } };
 }
