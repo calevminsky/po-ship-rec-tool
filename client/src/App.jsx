@@ -203,6 +203,7 @@ function pickBestTemplateKeyForTotal(total, buildAllocForKey) {
   // Choose the first key that avoids dropping Toms/Teaneck.
   for (const k of toTry) {
     const testAlloc = buildAllocForKey(k);
+    if (!testAlloc) continue;
     const trDrop = testAlloc._drop?.["Toms River"];
     const tnDrop = testAlloc._drop?.["Teaneck Store"];
     if (!trDrop && !tnDrop) return k;
@@ -214,6 +215,7 @@ function pickBestTemplateKeyForTotal(total, buildAllocForKey) {
 
   for (const k of toTry) {
     const testAlloc = buildAllocForKey(k);
+    if (!testAlloc) continue;
     const score = (testAlloc._drop?.["Toms River"] ? 1 : 0) + (testAlloc._drop?.["Teaneck Store"] ? 1 : 0);
     if (score < bestScore) {
       bestScore = score;
