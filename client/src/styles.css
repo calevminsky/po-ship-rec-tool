@@ -284,6 +284,10 @@ body{
   background: #fff;
 }
 
+.compactTopTable{ margin-top: 8px; }
+.matrixTopTotals{ min-width: 900px; }
+.matrixTopTotals td, .matrixTopTotals th{ padding: 8px 10px; }
+
 /* Allocation & scan matrices */
 .matrix2{
   width: 100%;
@@ -542,31 +546,7 @@ body{
   background: #fff;
 }
 
-.summaryBar{
-  margin-top: 10px;
-  display:flex;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-.summaryPill{
-  border: 1px solid var(--border);
-  background: #fff;
-  border-radius: 16px;
-  padding: 10px 12px;
-  min-width: 120px;
-}
-.summaryLabel{
-  font-size: 11px;
-  color: var(--muted);
-  font-weight: 900;
-}
-.summaryValue{
-  margin-top: 4px;
-  font-size: 16px;
-  font-weight: 950;
-  letter-spacing: -0.01em;
-}
-
+/* Clean summary cards */
 .summaryPanel{
   margin-top: 12px;
   border: 1px solid var(--border);
