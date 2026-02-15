@@ -139,7 +139,11 @@ async function inventoryActivate(inventoryItemId, locationId) {
 }
 
 // Adjust inventory quantities by delta
-export async function adjustInventoryQuantities({ reason = "correction", changes = [] }) {
+export async function adjustInventoryQuantities({
+  name = "po-ship-rec-tool",
+  reason = "correction",
+  changes = []
+}) {
   if (!Array.isArray(changes) || changes.length === 0) return { ok: true, skipped: true };
 
   // Try activate + adjust; collect errors per change for debugging
