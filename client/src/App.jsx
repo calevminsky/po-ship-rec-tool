@@ -189,22 +189,41 @@ function sumPerSize(obj, sizes) {
   return sizes.reduce((a, s) => a + Number(obj?.[s] ?? 0), 0);
 }
 
-function pickTemplateKeyForTotal(total) {
-  const keys = Object.keys(ALLOC_TEMPLATES).map((x) => Number(x)).sort((a, b) => a - b);
-  if (!keys.length) return null;
+function pickBestTemplateKeyForTotal(total, buildAllocForKey) {
+  const keys = Object.keys(ALLOC_TEMPLATES)
+    .map((x) => Number(x))
+    .sort((a, b) => b - a); // descending
 
-  // choose closest by absolute difference
-  let best = keys[0];
-  let bestD = Math.abs(best - total);
-  for (const k of keys) {
-    const d = Math.abs(k - total);
-    if (d < bestD) {
-      best = k;
-      bestD = d;
+  // Prefer the largest key <= total first (scale-down behavior)
+  const candidates = keys.filter((k) => k <= total);
+  const fallback = keys; // if total smaller than smallest scale
+
+  const toTry = candidates.length ? candidates : fallback;
+
+  // Choose the first key that avoids dropping Toms/Teaneck.
+  for (const k of toTry) {
+    const testAlloc = buildAllocForKey(k);
+    const trDrop = testAlloc._drop?.["Toms River"];
+    const tnDrop = testAlloc._drop?.["Teaneck Store"];
+    if (!trDrop && !tnDrop) return k;
+  }
+
+  // If all would drop, choose the one with the least "badness"
+  let bestKey = toTry[0];
+  let bestScore = Infinity;
+
+  for (const k of toTry) {
+    const testAlloc = buildAllocForKey(k);
+    const score = (testAlloc._drop?.["Toms River"] ? 1 : 0) + (testAlloc._drop?.["Teaneck Store"] ? 1 : 0);
+    if (score < bestScore) {
+      bestScore = score;
+      bestKey = k;
     }
   }
-  return best;
+
+  return bestKey;
 }
+
 
 function computeRatiosFromTemplate(templateForKey, size) {
   // returns { loc: ratio } across the template locations for that size
@@ -258,15 +277,32 @@ function apportionInteger(total, ratios, priorityOrder) {
   return base;
 }
 
-function shouldDropStore(storeRow, sizes) {
-  // Heuristic: if a store gets units but has too few core sizes, it's probably "style removed from store".
-  // "Too few" = fewer than 2 of the core sizes (S/M/L) present (>0).
-  const total = sizes.reduce((a, s) => a + Number(storeRow?.[s] ?? 0), 0);
-  if (total <= 0) return false;
+function missingFullSizesCount(storeRow, shippedTotalsBySize, sizes) {
+  // "Full sizes" = any size that exists in the shipment (>0)
+  // Count how many of those are 0 for this store.
+  let missing = 0;
+  for (const s of sizes) {
+    const shipQty = Number(shippedTotalsBySize?.[s] ?? 0);
+    if (shipQty <= 0) continue;
 
-  const present = CORE_SIZES_FOR_STYLE.filter((s) => Number(storeRow?.[s] ?? 0) > 0).length;
-  return present < 2;
+    const got = Number(storeRow?.[s] ?? 0);
+    if (got <= 0) missing += 1;
+  }
+  return missing;
 }
+
+function shouldDropStore(storeRow, shippedTotalsBySize, sizes) {
+  const rowTotal = sizes.reduce((a, s) => a + Number(storeRow?.[s] ?? 0), 0);
+  if (rowTotal <= 0) return false;
+
+  const missing = missingFullSizesCount(storeRow, shippedTotalsBySize, sizes);
+
+  // NEW RULE:
+  // - drop if < 7 units total
+  // - OR missing 2+ full sizes
+  return rowTotal < 7 || missing >= 2;
+}
+
 
 function moveRowToSink(matrix, fromLoc, sinkLoc, sizes) {
   const out = structuredClone(matrix);
@@ -540,47 +576,36 @@ export default function App() {
   }
 
   // ---------- Mode 2: Auto Allocate ----------
-  function onAutoAllocate() {
-    // Build an allocation matrix based on shipped totals + allocation template ratios
-    const ship = { ...shipTotalsBySize };
+  function onAutoAllocate() function onAutoAllocate() {
+  const shipOriginal = { ...shipTotalsBySize };
 
-    // start with empty alloc for the current locations
+  // helper to build allocation for a given template key (for evaluation + final)
+  const buildAllocForKey = (templateKey) => {
+    const template = ALLOC_TEMPLATES[templateKey];
+    if (!template) return null;
+
+    const ship = { ...shipOriginal };
     let nextAlloc = emptyMatrix(locations, sizes);
 
     // 1) Always 1 XS to Office (if possible)
     if (ship.XS >= 1 && locations.includes("Office")) {
       nextAlloc["Office"]["XS"] = 1;
-      ship.XS = ship.XS - 1;
+      ship.XS -= 1;
     }
 
-    // 2) Choose a template scale based on remaining total (including XXS, but template ratios follow XS for XXS)
-    const remainingTotal = sizes.reduce((a, s) => a + Number(ship?.[s] ?? 0), 0);
-    const templateKey = pickTemplateKeyForTotal(remainingTotal);
-    const template = templateKey ? ALLOC_TEMPLATES[templateKey] : null;
-
-    if (!template) {
-      setStatus("Auto Allocate failed: no templates available.");
-      return;
-    }
-
-    // For safety: only allocate across these template locations (skip Office)
+    // Only allocate across these template locations (skip Office)
     const templateLocs = Object.keys(template).filter((l) => locations.includes(l));
     const priority = FILL_PRIORITY.filter((l) => templateLocs.includes(l));
-
-    // 3) Allocate each size across templateLocs using template ratios for that size
-    const templateSizes = ["XS", "S", "M", "L", "XL"];
 
     for (const size of sizes) {
       const qty = Number(ship?.[size] ?? 0);
       if (!qty) continue;
 
-      // Determine which template column to use for ratios
-      let ratioSize = size;
-      if (size === "XXS") ratioSize = "XS"; // XXS follows XS ratio
-      if (!templateSizes.includes(ratioSize) && ratioSize !== "XS") ratioSize = "XS";
+      // XXS follows XS ratios
+      let ratioSize = size === "XXS" ? "XS" : size;
+      if (!["XS", "S", "M", "L", "XL"].includes(ratioSize)) ratioSize = "XS";
 
       const ratiosAll = computeRatiosFromTemplate(template, ratioSize);
-      // pick only templateLocs
       const ratios = {};
       for (const loc of templateLocs) ratios[loc] = ratiosAll[loc] || 0;
 
@@ -591,25 +616,53 @@ export default function App() {
       }
     }
 
-    // 4) Underage / “drop store” heuristic:
-    // If a store ends up too incomplete (few core sizes), we remove that store for this style
-    // and move its units back to a sink.
-    // Sink preference: if Warehouse already has any units after allocation, sink=Warehouse else Cedarhurst.
-    const warehouseHasAny = sizes.reduce((a, s) => a + Number(nextAlloc?.["Warehouse"]?.[s] ?? 0), 0) > 0;
-    const sink = warehouseHasAny ? "Warehouse" : "Cedarhurst";
-
-    // only consider dropping Toms River / Teaneck Store (not Bogota/Cedarhurst/Office/Warehouse)
-    const droppable = ["Toms River", "Teaneck Store"].filter((l) => locations.includes(l));
-
-    for (const loc of droppable) {
-      if (shouldDropStore(nextAlloc[loc], sizes)) {
-        nextAlloc = moveRowToSink(nextAlloc, loc, sink, sizes);
-      }
+    // Evaluate drop-worthiness (but DON'T move units yet in the evaluator)
+    const dropMap = {};
+    for (const loc of ["Toms River", "Teaneck Store"]) {
+      if (!locations.includes(loc)) continue;
+      dropMap[loc] = shouldDropStore(nextAlloc[loc], shipOriginal, sizes);
     }
 
-    setAlloc(nextAlloc);
-    setStatus(`Auto Allocated using scale ${templateKey} ✅ (Office XS rule applied)`);
+    nextAlloc._drop = dropMap;
+    return nextAlloc;
+  };
+
+  // 2) Choose best template key with "scale down" behavior if needed
+  const remainingTotal = sizes.reduce((a, s) => a + Number(shipOriginal?.[s] ?? 0), 0);
+  const templateKey = pickBestTemplateKeyForTotal(remainingTotal, buildAllocForKey);
+  const built = buildAllocForKey(templateKey);
+
+  if (!built) {
+    setStatus("Auto Allocate failed: no templates available.");
+    return;
   }
+
+  // Strip evaluator metadata
+  delete built._drop;
+
+  // 3) Apply final drop rules (move units to sink)
+  // Sink preference:
+  // - If Warehouse already has any units → Warehouse
+  // - Else Cedarhurst, else Bogota
+  const warehouseHasAny = sizes.reduce((a, s) => a + Number(built?.["Warehouse"]?.[s] ?? 0), 0) > 0;
+
+  let sink = null;
+  if (warehouseHasAny && locations.includes("Warehouse")) sink = "Warehouse";
+  else if (locations.includes("Cedarhurst")) sink = "Cedarhurst";
+  else if (locations.includes("Bogota")) sink = "Bogota";
+  else sink = locations[0];
+
+  for (const loc of ["Toms River", "Teaneck Store"]) {
+    if (!locations.includes(loc)) continue;
+    if (shouldDropStore(built[loc], shipOriginal, sizes)) {
+      built = moveRowToSink(built, loc, sink, sizes);
+    }
+  }
+
+  setAlloc(built);
+  setStatus(`Auto Allocated ✅ (scale ${templateKey}) — drop rule: <7 units OR missing 2+ sizes; Office XS rule applied`);
+}
+
 
   // ---------- Mode 2: Save Allocation ----------
   async function onSaveAllocation() {
