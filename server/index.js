@@ -250,6 +250,10 @@ app.post("/api/closeout", requireAuth, async (req, res) => {
   }
 });
 
+
+app.use(express.static(clientDist));
+
+
 // ---- Static client ----
 app.use(express.static(clientDist));
 app.get("*", (req, res) => res.sendFile(path.join(clientDist, "index.html")));
