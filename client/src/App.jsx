@@ -14,8 +14,107 @@ import {
   closeoutPdf
 } from "./api.js";
 
+/**
+ * NOTE:
+ * - Sizes are columns, locations are rows.
+ * - Auto allocation uses an "allocation scale" template (from your Allocation Guide)
+ *   and applies per-size ratios (template ratios) to the actual shipped per-size totals.
+ * - Always allocate 1 XS to "Office" (if XS >= 1), before allocating the remainder.
+ * - Fill priority for rounding leftovers: Bogota, Cedarhurst, Toms River, Teaneck Store, Warehouse
+ * - If underage makes a store too incomplete, we "drop" that store and move its units to a sink:
+ *   Warehouse if Warehouse already has any units, else Cedarhurst.
+ */
+
 const SIZES = ["XXS", "XS", "S", "M", "L", "XL"];
+const CORE_SIZES_FOR_STYLE = ["S", "M", "L"]; // used for "drop store" heuristic when underage makes a store too incomplete
+
+// This matches what you described (and what your UI uses in your tool)
 const DEFAULT_LOCATIONS = ["Bogota", "Cedarhurst", "Toms River", "Teaneck Store", "Office", "Warehouse"];
+
+// Allocation rounding priority
+const FILL_PRIORITY = ["Bogota", "Cedarhurst", "Toms River", "Teaneck Store", "Warehouse"];
+
+// Allocation Guide S26 scales (from your uploaded guide)
+// These templates are XS–XL. XXS will be allocated using the same ratios as XS.
+const ALLOC_TEMPLATES = {
+  60: {
+    Bogota: { XS: 6, S: 6, M: 4, L: 2, XL: 2 },
+    Cedarhurst: { XS: 6, S: 6, M: 4, L: 2, XL: 2 },
+    "Toms River": { XS: 3, S: 3, M: 2, L: 1, XL: 1 },
+    "Teaneck Store": { XS: 3, S: 3, M: 2, L: 1, XL: 1 },
+    Warehouse: { XS: 0, S: 0, M: 0, L: 0, XL: 0 }
+  },
+  70: {
+    Bogota: { XS: 6, S: 6, M: 4, L: 2, XL: 2 },
+    Cedarhurst: { XS: 9, S: 9, M: 6, L: 3, XL: 3 },
+    "Toms River": { XS: 3, S: 3, M: 2, L: 1, XL: 1 },
+    "Teaneck Store": { XS: 3, S: 3, M: 2, L: 1, XL: 1 },
+    Warehouse: { XS: 0, S: 0, M: 0, L: 0, XL: 0 }
+  },
+  80: {
+    Bogota: { XS: 6, S: 6, M: 4, L: 2, XL: 2 },
+    Cedarhurst: { XS: 9, S: 9, M: 6, L: 3, XL: 3 },
+    "Toms River": { XS: 6, S: 6, M: 4, L: 2, XL: 2 },
+    "Teaneck Store": { XS: 3, S: 3, M: 2, L: 1, XL: 1 },
+    Warehouse: { XS: 0, S: 0, M: 0, L: 0, XL: 0 }
+  },
+  90: {
+    Bogota: { XS: 9, S: 9, M: 6, L: 3, XL: 3 },
+    Cedarhurst: { XS: 9, S: 9, M: 6, L: 3, XL: 3 },
+    "Toms River": { XS: 6, S: 6, M: 4, L: 2, XL: 2 },
+    "Teaneck Store": { XS: 3, S: 3, M: 2, L: 1, XL: 1 },
+    Warehouse: { XS: 0, S: 0, M: 0, L: 0, XL: 0 }
+  },
+  100: {
+    Bogota: { XS: 9, S: 9, M: 6, L: 3, XL: 3 },
+    Cedarhurst: { XS: 12, S: 12, M: 8, L: 4, XL: 4 },
+    "Toms River": { XS: 6, S: 6, M: 4, L: 2, XL: 2 },
+    "Teaneck Store": { XS: 3, S: 3, M: 2, L: 1, XL: 1 },
+    Warehouse: { XS: 0, S: 0, M: 0, L: 0, XL: 0 }
+  },
+  120: {
+    Bogota: { XS: 9, S: 9, M: 6, L: 3, XL: 3 },
+    Cedarhurst: { XS: 12, S: 12, M: 8, L: 4, XL: 4 },
+    "Toms River": { XS: 6, S: 6, M: 4, L: 2, XL: 2 },
+    "Teaneck Store": { XS: 3, S: 3, M: 2, L: 1, XL: 1 },
+    Warehouse: { XS: 6, S: 6, M: 4, L: 2, XL: 2 }
+  },
+  130: {
+    Bogota: { XS: 9, S: 9, M: 6, L: 3, XL: 3 },
+    Cedarhurst: { XS: 15, S: 15, M: 10, L: 5, XL: 5 },
+    "Toms River": { XS: 6, S: 6, M: 4, L: 2, XL: 2 },
+    "Teaneck Store": { XS: 3, S: 3, M: 2, L: 1, XL: 1 },
+    Warehouse: { XS: 6, S: 6, M: 4, L: 2, XL: 2 }
+  },
+  140: {
+    Bogota: { XS: 12, S: 12, M: 8, L: 4, XL: 4 },
+    Cedarhurst: { XS: 15, S: 15, M: 10, L: 5, XL: 5 },
+    "Toms River": { XS: 6, S: 6, M: 4, L: 2, XL: 2 },
+    "Teaneck Store": { XS: 3, S: 3, M: 2, L: 1, XL: 1 },
+    Warehouse: { XS: 6, S: 6, M: 4, L: 2, XL: 2 }
+  },
+  170: {
+    Bogota: { XS: 12, S: 12, M: 8, L: 4, XL: 4 },
+    Cedarhurst: { XS: 18, S: 18, M: 12, L: 6, XL: 6 },
+    "Toms River": { XS: 9, S: 9, M: 6, L: 3, XL: 3 },
+    "Teaneck Store": { XS: 6, S: 6, M: 4, L: 2, XL: 2 },
+    Warehouse: { XS: 9, S: 9, M: 6, L: 3, XL: 3 }
+  },
+  200: {
+    Bogota: { XS: 15, S: 15, M: 10, L: 5, XL: 5 },
+    Cedarhurst: { XS: 24, S: 24, M: 16, L: 8, XL: 8 },
+    "Toms River": { XS: 12, S: 12, M: 8, L: 4, XL: 4 },
+    "Teaneck Store": { XS: 9, S: 9, M: 6, L: 3, XL: 3 },
+    Warehouse: { XS: 12, S: 12, M: 8, L: 4, XL: 4 }
+  },
+  220: {
+    Bogota: { XS: 18, S: 18, M: 12, L: 6, XL: 6 },
+    Cedarhurst: { XS: 24, S: 24, M: 16, L: 8, XL: 8 },
+    "Toms River": { XS: 12, S: 12, M: 8, L: 4, XL: 4 },
+    "Teaneck Store": { XS: 9, S: 9, M: 6, L: 3, XL: 3 },
+    Warehouse: { XS: 12, S: 12, M: 8, L: 4, XL: 4 }
+  }
+};
 
 function clampInt(v) {
   if (v === "" || v === null || v === undefined) return 0;
@@ -88,6 +187,94 @@ function money(n) {
 
 function sumPerSize(obj, sizes) {
   return sizes.reduce((a, s) => a + Number(obj?.[s] ?? 0), 0);
+}
+
+function pickTemplateKeyForTotal(total) {
+  const keys = Object.keys(ALLOC_TEMPLATES).map((x) => Number(x)).sort((a, b) => a - b);
+  if (!keys.length) return null;
+
+  // choose closest by absolute difference
+  let best = keys[0];
+  let bestD = Math.abs(best - total);
+  for (const k of keys) {
+    const d = Math.abs(k - total);
+    if (d < bestD) {
+      best = k;
+      bestD = d;
+    }
+  }
+  return best;
+}
+
+function computeRatiosFromTemplate(templateForKey, size) {
+  // returns { loc: ratio } across the template locations for that size
+  const ratios = {};
+  let colTotal = 0;
+  for (const loc of Object.keys(templateForKey)) {
+    const v = Number(templateForKey[loc]?.[size] ?? 0);
+    colTotal += v;
+  }
+  for (const loc of Object.keys(templateForKey)) {
+    const v = Number(templateForKey[loc]?.[size] ?? 0);
+    ratios[loc] = colTotal > 0 ? v / colTotal : 0;
+  }
+  return ratios;
+}
+
+function apportionInteger(total, ratios, priorityOrder) {
+  // Largest remainder method with deterministic tie-break using priorityOrder
+  const locs = Object.keys(ratios);
+  const raw = {};
+  const base = {};
+  const frac = {};
+
+  let used = 0;
+  for (const loc of locs) {
+    raw[loc] = total * (ratios[loc] || 0);
+    base[loc] = Math.floor(raw[loc]);
+    frac[loc] = raw[loc] - base[loc];
+    used += base[loc];
+  }
+
+  let remaining = total - used;
+  if (remaining <= 0) return base;
+
+  // order candidates by frac desc, then by priority list
+  const prIndex = new Map(priorityOrder.map((l, i) => [l, i]));
+  const ordered = [...locs].sort((a, b) => {
+    const df = (frac[b] ?? 0) - (frac[a] ?? 0);
+    if (df !== 0) return df;
+    return (prIndex.get(a) ?? 999) - (prIndex.get(b) ?? 999);
+  });
+
+  let idx = 0;
+  while (remaining > 0) {
+    const loc = ordered[idx % ordered.length];
+    base[loc] += 1;
+    remaining -= 1;
+    idx += 1;
+  }
+
+  return base;
+}
+
+function shouldDropStore(storeRow, sizes) {
+  // Heuristic: if a store gets units but has too few core sizes, it's probably "style removed from store".
+  // "Too few" = fewer than 2 of the core sizes (S/M/L) present (>0).
+  const total = sizes.reduce((a, s) => a + Number(storeRow?.[s] ?? 0), 0);
+  if (total <= 0) return false;
+
+  const present = CORE_SIZES_FOR_STYLE.filter((s) => Number(storeRow?.[s] ?? 0) > 0).length;
+  return present < 2;
+}
+
+function moveRowToSink(matrix, fromLoc, sinkLoc, sizes) {
+  const out = structuredClone(matrix);
+  for (const s of sizes) {
+    out[sinkLoc][s] = Number(out[sinkLoc][s] ?? 0) + Number(out[fromLoc][s] ?? 0);
+    out[fromLoc][s] = 0;
+  }
+  return out;
 }
 
 export default function App() {
@@ -255,7 +442,6 @@ export default function App() {
       setBarcodeMap(buildBarcodeMapFromProduct(r.product));
       setStatus(`Linked Shopify loaded: ${r.product?.title || "Product"} ✅`);
     } catch (e) {
-      // Don’t hard-fail the user; just show a message.
       setShopifyLinked(false);
       setShopifyProduct(null);
       setBarcodeMap({});
@@ -353,6 +539,78 @@ export default function App() {
     }
   }
 
+  // ---------- Mode 2: Auto Allocate ----------
+  function onAutoAllocate() {
+    // Build an allocation matrix based on shipped totals + allocation template ratios
+    const ship = { ...shipTotalsBySize };
+
+    // start with empty alloc for the current locations
+    let nextAlloc = emptyMatrix(locations, sizes);
+
+    // 1) Always 1 XS to Office (if possible)
+    if (ship.XS >= 1 && locations.includes("Office")) {
+      nextAlloc["Office"]["XS"] = 1;
+      ship.XS = ship.XS - 1;
+    }
+
+    // 2) Choose a template scale based on remaining total (including XXS, but template ratios follow XS for XXS)
+    const remainingTotal = sizes.reduce((a, s) => a + Number(ship?.[s] ?? 0), 0);
+    const templateKey = pickTemplateKeyForTotal(remainingTotal);
+    const template = templateKey ? ALLOC_TEMPLATES[templateKey] : null;
+
+    if (!template) {
+      setStatus("Auto Allocate failed: no templates available.");
+      return;
+    }
+
+    // For safety: only allocate across these template locations (skip Office)
+    const templateLocs = Object.keys(template).filter((l) => locations.includes(l));
+    const priority = FILL_PRIORITY.filter((l) => templateLocs.includes(l));
+
+    // 3) Allocate each size across templateLocs using template ratios for that size
+    const templateSizes = ["XS", "S", "M", "L", "XL"];
+
+    for (const size of sizes) {
+      const qty = Number(ship?.[size] ?? 0);
+      if (!qty) continue;
+
+      // Determine which template column to use for ratios
+      let ratioSize = size;
+      if (size === "XXS") ratioSize = "XS"; // XXS follows XS ratio
+      if (!templateSizes.includes(ratioSize) && ratioSize !== "XS") ratioSize = "XS";
+
+      const ratiosAll = computeRatiosFromTemplate(template, ratioSize);
+      // pick only templateLocs
+      const ratios = {};
+      for (const loc of templateLocs) ratios[loc] = ratiosAll[loc] || 0;
+
+      const apportioned = apportionInteger(qty, ratios, priority);
+
+      for (const loc of templateLocs) {
+        nextAlloc[loc][size] = Number(nextAlloc[loc][size] ?? 0) + Number(apportioned[loc] ?? 0);
+      }
+    }
+
+    // 4) Underage / “drop store” heuristic:
+    // If a store ends up too incomplete (few core sizes), we remove that store for this style
+    // and move its units back to a sink.
+    // Sink preference: if Warehouse already has any units after allocation, sink=Warehouse else Cedarhurst.
+    const warehouseHasAny = sizes.reduce((a, s) => a + Number(nextAlloc?.["Warehouse"]?.[s] ?? 0), 0) > 0;
+    const sink = warehouseHasAny ? "Warehouse" : "Cedarhurst";
+
+    // only consider dropping Toms River / Teaneck Store (not Bogota/Cedarhurst/Office/Warehouse)
+    const droppable = ["Toms River", "Teaneck Store"].filter((l) => locations.includes(l));
+
+    for (const loc of droppable) {
+      if (shouldDropStore(nextAlloc[loc], sizes)) {
+        nextAlloc = moveRowToSink(nextAlloc, loc, sink, sizes);
+      }
+    }
+
+    setAlloc(nextAlloc);
+    setStatus(`Auto Allocated using scale ${templateKey} ✅ (Office XS rule applied)`);
+  }
+
   // ---------- Mode 2: Save Allocation ----------
   async function onSaveAllocation() {
     if (!selectedId) return;
@@ -404,7 +662,7 @@ export default function App() {
       setBarcodeMap(buildBarcodeMapFromProduct(r.product));
       setStatus(`Linked + saved ✅ ${r.product.title}`);
 
-      // Optional: refresh PO data so the record carries the saved gid in UI too
+      // refresh PO data so record carries saved gid in UI
       if (poData?.po) {
         const refreshed = await fetchPO(poData.po);
         setPoData(refreshed);
@@ -658,7 +916,7 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Link step is now available in Allocation + Receiving */}
+                {/* Shopify link is in Mode 2 + Mode 3 */}
                 {selected && (mode === "allocation" || mode === "receiving") ? (
                   <>
                     <div className="divider" />
@@ -667,14 +925,9 @@ export default function App() {
 
                       {selected.shopifyProductGid ? (
                         <div className="hint">
-                          ✅ Linked in Airtable: <strong>{selected.shopifyProductGid}</strong>
+                          ✅ Linked in Airtable
                           <div style={{ marginTop: 8 }}>
-                            <button
-                              className="btn"
-                              onClick={() => autoLoadShopifyIfLinked(selected)}
-                              disabled={loading}
-                              type="button"
-                            >
+                            <button className="btn" onClick={() => autoLoadShopifyIfLinked(selected)} disabled={loading} type="button">
                               Refresh Shopify Variants
                             </button>
                           </div>
@@ -731,13 +984,15 @@ export default function App() {
                     <div className="productBadges">
                       <span className="badge">Unit Cost: {money(unitCost)}</span>
                       <span className="badge subtle">PO: {poData?.po}</span>
-                      <span className="badge subtle">Buy: {sumPerSize(buyTotalsBySize, sizes)}</span>
-                      <span className="badge subtle">Ship: {sumPerSize(shipTotalsBySize, sizes)}</span>
                     </div>
                   </div>
 
                   <div className="imageCard">
-                    {selected.imageUrl ? <img className="image" src={selected.imageUrl} alt="Product or Swatch" /> : <div className="imageEmpty">No image</div>}
+                    {selected.imageUrl ? (
+                      <img className="image" src={selected.imageUrl} alt="Product or Swatch" />
+                    ) : (
+                      <div className="imageEmpty">No image</div>
+                    )}
                   </div>
                 </div>
 
@@ -751,6 +1006,8 @@ export default function App() {
                         <div className="label">Ship Date</div>
                         <input className="dateBig" type="date" value={shipDate} onChange={(e) => setShipDate(e.target.value)} />
                       </div>
+
+                      <BuyShipTotalsRow sizes={sizes} buyTotals={buyTotalsBySize} shipTotals={shipTotalsBySize} />
 
                       <div className="tableCard">
                         <table className="matrix2 matrixSimple">
@@ -805,31 +1062,21 @@ export default function App() {
                 {mode === "allocation" ? (
                   <>
                     <div className="sectionTitle">Mode 2 — Allocation</div>
-                    <div className="hint">Allocate shipped units across locations (sizes=columns, locations=rows).</div>
-
-                    <div className="summaryBar">
-                      <div className="summaryPill">
-                        <div className="summaryLabel">Buy</div>
-                        <div className="summaryValue">{sumPerSize(buyTotalsBySize, sizes)}</div>
-                      </div>
-                      <div className="summaryPill">
-                        <div className="summaryLabel">Ship</div>
-                        <div className="summaryValue">{sumPerSize(shipTotalsBySize, sizes)}</div>
-                      </div>
-                      <div className="summaryPill">
-                        <div className="summaryLabel">Allocated</div>
-                        <div className="summaryValue">{sumPerSize(allocTotalsBySize, sizes)}</div>
-                      </div>
-                      <div className={`summaryPill ${allocMatchesShip ? "okSoft" : "badSoft"}`}>
-                        <div className="summaryLabel">Ship Match</div>
-                        <div className="summaryValue">{allocMatchesShip ? "Yes" : "No"}</div>
-                      </div>
+                    <div className="hint">
+                      Sizes are columns. Locations are rows. Use Auto Allocate first, then do minimal manual edits.
                     </div>
 
+                    {/* REQUIRED: totals per size above matrix */}
+                    <BuyShipTotalsRow sizes={sizes} buyTotals={buyTotalsBySize} shipTotals={shipTotalsBySize} />
+
                     <div className="modeTools">
+                      <button className="btn primary" onClick={onAutoAllocate} type="button" disabled={loading}>
+                        Auto Allocate
+                      </button>
                       <button className="btn" onClick={() => setAllocEdit((v) => !v)} type="button">
                         {allocEdit ? "Done Editing" : "Edit Allocation"}
                       </button>
+
                       <div className={`modeFlag ${allocMatchesShip ? "okText" : "badText"}`}>
                         {allocMatchesShip ? "Totals match Ship Units" : "Totals do NOT match Ship Units"}
                       </div>
@@ -857,7 +1104,7 @@ export default function App() {
                 {mode === "receiving" ? (
                   <>
                     <div className="sectionTitle">Mode 3 — Receiving</div>
-                    <div className="hint">Select a location, then scan. You can’t miss what’s allocated vs scanned.</div>
+                    <div className="hint">Select a location, then scan. The selected location stays visually obvious.</div>
 
                     <div className="locBar">
                       <div className="locTitle">Selected Location</div>
@@ -910,11 +1157,13 @@ export default function App() {
                         </button>
                       </form>
 
-                      <div className="scanHint">Tip: keep the scanner cursor in the scan box. Overscans prompt for override.</div>
+                      <div className="scanHint">Tip: over-scans prompt for override. Wrong barcode warns.</div>
                     </div>
 
+                    {/* Clean, Apple-ish summary for the ACTIVE location */}
                     <ActiveLocSummary activeLoc={activeLoc} sizes={sizes} alloc={alloc} scan={scan} />
 
+                    {/* Cleaner matrix: big scanned number, small "of alloc" */}
                     <ReceivingMatrixClean
                       locations={locations}
                       sizes={sizes}
@@ -931,7 +1180,9 @@ export default function App() {
                         Submit Closeout + Download PDF
                       </button>
 
-                      <div className="actionsNote">Warnings appear if Allocation≠Ship or Scan≠Allocation, but you can still submit if needed.</div>
+                      <div className="actionsNote">
+                        You’ll get warnings if Allocation≠Ship or Scan≠Allocation, but you can still submit if needed.
+                      </div>
                     </div>
                   </>
                 ) : null}
@@ -945,6 +1196,46 @@ export default function App() {
 }
 
 /* ---------------- Components ---------------- */
+
+function BuyShipTotalsRow({ sizes, buyTotals, shipTotals }) {
+  return (
+    <div className="tableCard compactTopTable">
+      <table className="matrix2 matrixTopTotals">
+        <thead>
+          <tr>
+            <th className="c-loc">Totals</th>
+            {sizes.map((s) => (
+              <th key={s} className="c-size2">
+                {s}
+              </th>
+            ))}
+            <th className="c-rowtotal">Total</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td className="locCell subtleRow">Buy</td>
+            {sizes.map((s) => (
+              <td key={s} className="cellRead">
+                {Number(buyTotals?.[s] ?? 0)}
+              </td>
+            ))}
+            <td className="cellRead strong">{sumPerSize(buyTotals, sizes)}</td>
+          </tr>
+          <tr>
+            <td className="locCell">Ship</td>
+            {sizes.map((s) => (
+              <td key={s} className="cellRead">
+                {Number(shipTotals?.[s] ?? 0)}
+              </td>
+            ))}
+            <td className="cellRead strong">{sumPerSize(shipTotals, sizes)}</td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+  );
+}
 
 function AllocationMatrix({ locations, sizes, alloc, shipTotalsBySize, allocTotalsBySize, edit, setAllocCell, bumpAllocCell }) {
   const diffs = useMemo(() => diffPerSize(allocTotalsBySize, shipTotalsBySize, sizes), [allocTotalsBySize, shipTotalsBySize, sizes]);
@@ -996,11 +1287,13 @@ function AllocationMatrix({ locations, sizes, alloc, shipTotalsBySize, allocTota
           })}
 
           <tr className="totRow">
-            <td className="locCell strong">Totals</td>
+            <td className="locCell strong">Allocated Totals</td>
             {sizes.map((s) => (
               <td key={s} className={diffs[s] !== 0 ? "badCell" : ""}>
                 <div className="strong">{allocTotalsBySize[s]}</div>
-                <div className="tiny">Ship: {shipTotalsBySize[s]} (diff {diffs[s]})</div>
+                <div className="tiny">
+                  Ship: {shipTotalsBySize[s]} (diff {diffs[s]})
+                </div>
               </td>
             ))}
             <td className="cellRead strong">{sizes.reduce((a, s) => a + Number(allocTotalsBySize[s] ?? 0), 0)}</td>
@@ -1026,7 +1319,7 @@ function ActiveLocSummary({ activeLoc, sizes, alloc, scan }) {
   return (
     <div className="summaryPanel">
       <div className="summaryPanelTop">
-        <div className="summaryPanelTitle">Allocation vs Scanned — {activeLoc}</div>
+        <div className="summaryPanelTitle">{activeLoc} — Allocation vs Scanned</div>
         <div className="summaryPanelTotals">
           <span className="tag">Allocated: {totalA}</span>
           <span className="tag">Scanned: {totalV}</span>
@@ -1038,7 +1331,9 @@ function ActiveLocSummary({ activeLoc, sizes, alloc, scan }) {
           <div key={it.s} className={`sizeCard ${it.over ? "badSoft" : it.done ? "okSoft" : ""}`}>
             <div className="sizeCardTop">
               <div className="sizeName">{it.s}</div>
-              <div className={`sizeDelta ${it.over ? "badText" : ""}`}>{it.v}/{it.a}</div>
+              <div className={`sizeDelta ${it.over ? "badText" : ""}`}>
+                {it.v}/{it.a}
+              </div>
             </div>
             <div className="sizeSub">Scanned / Allocated</div>
           </div>
