@@ -220,7 +220,12 @@ app.post("/api/closeout", requireAuth, async (req, res) => {
         }
       }
 
-      const result = await adjustInventoryQuantities({ reason: "correction", changes });
+      const result = await adjustInventoryQuantities({
+  name: `Closeout ${po || recordId || ""}`.trim(),
+  reason: "correction",
+  changes
+});
+
       shopifyResult = result;
 
       if (!result.ok) {
