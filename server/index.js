@@ -2,14 +2,15 @@ import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import cookieParser from "cookie-parser";
+
 import { listRecordsByPO, updateRecord, getSizes, AIRTABLE_FIELDS } from "./airtable.js";
 import { getLocations, lookupVariantByBarcode, fetchProductVariants, adjustInventoryQuantities } from "./shopify.js";
 import { buildCloseoutPdf } from "./pdf.js";
-import { buildAuthorizeUrl, exchangeCodeForToken, loadTokenFromDisk, makeState, saveTokenToDisk } from "./shopifyAuth.js";
 
-let SHOPIFY_ACCESS_TOKEN = loadTokenFromDisk(); // memory cache
+import { buildAuthorizeUrl, exchangeCodeForToken, makeState } from "./shopifyAuth.js";
+import { setShopifyAccessToken, hasShopifyAccessToken } from "./shopifyTokenStore.js";
+
 let OAUTH_STATE = null;
-
 
 const app = express();
 app.use(express.json({ limit: "1mb" }));
@@ -22,14 +23,19 @@ const clientDist = path.join(__dirname, "public");
 // ---- APP_USERS auth (Option 2) ----
 const USERS_RAW = process.env.APP_USERS || "";
 const USERS = new Map(
-  USERS_RAW.split(",").map(s => s.trim()).filter(Boolean).map(pair => {
-    const idx = pair.indexOf(":");
-    if (idx === -1) return null;
-    const user = pair.slice(0, idx).trim();
-    const pass = pair.slice(idx + 1).trim();
-    if (!user || !pass) return null;
-    return [user, pass];
-  }).filter(Boolean)
+  USERS_RAW
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .map((pair) => {
+      const idx = pair.indexOf(":");
+      if (idx === -1) return null;
+      const user = pair.slice(0, idx).trim();
+      const pass = pair.slice(idx + 1).trim();
+      if (!user || !pass) return null;
+      return [user, pass];
+    })
+    .filter(Boolean)
 );
 
 const AUTH_ENABLED = USERS.size > 0;
@@ -55,6 +61,7 @@ app.post("/api/login", (req, res) => {
   const expected = USERS.get(String(username || ""));
   if (!expected || expected !== String(password || "")) return res.status(401).json({ error: "Invalid credentials" });
 
+  // NOTE: secure:true requires HTTPS (Render is HTTPS, so OK)
   res.cookie("yb_user", String(username), { httpOnly: true, sameSite: "strict", secure: true });
   res.json({ ok: true, user: { username }, authEnabled: true });
 });
@@ -62,6 +69,36 @@ app.post("/api/login", (req, res) => {
 app.post("/api/logout", (req, res) => {
   res.clearCookie("yb_user");
   res.json({ ok: true });
+});
+
+// -------------------- SHOPIFY OAUTH --------------------
+// Start OAuth
+app.get("/api/shopify/auth", requireAuth, (req, res) => {
+  OAUTH_STATE = makeState();
+  const url = buildAuthorizeUrl(OAUTH_STATE);
+  res.redirect(url);
+});
+
+// OAuth callback
+app.get("/api/shopify/callback", requireAuth, async (req, res) => {
+  try {
+    const { code, state } = req.query;
+    if (!code) return res.status(400).send("Missing code");
+    if (!state || state !== OAUTH_STATE) return res.status(400).send("Invalid state");
+
+    const token = await exchangeCodeForToken(code);
+    setShopifyAccessToken(token);
+
+    // back to app
+    res.redirect("/?shopify=connected");
+  } catch (e) {
+    res.status(500).send(`Shopify auth failed: ${e.message}`);
+  }
+});
+
+// Token status
+app.get("/api/shopify/status", requireAuth, (req, res) => {
+  res.json({ ok: true, hasToken: hasShopifyAccessToken() });
 });
 
 // ---- Airtable PO ----
@@ -77,10 +114,10 @@ app.get("/api/po/:po", requireAuth, async (req, res) => {
 
 // ---- Locations ----
 app.get("/api/locations", requireAuth, (req, res) => {
-  res.json({ ok: true, locations: getLocations().map(l => l.name) });
+  res.json({ ok: true, locations: getLocations().map((l) => l.name) });
 });
 
-// ---- Save Allocation / Scan JSON / Rec totals ----
+// ---- Save Allocation ----
 app.patch("/api/record/:id/save-allocation", requireAuth, async (req, res) => {
   try {
     const id = req.params.id;
@@ -94,6 +131,7 @@ app.patch("/api/record/:id/save-allocation", requireAuth, async (req, res) => {
   }
 });
 
+// ---- Save Scan + Rec totals ----
 app.patch("/api/record/:id/save-scan", requireAuth, async (req, res) => {
   try {
     const id = req.params.id;
@@ -102,11 +140,8 @@ app.patch("/api/record/:id/save-scan", requireAuth, async (req, res) => {
 
     const patch = { [AIRTABLE_FIELDS.SCAN_FIELD]: scanJson };
 
-    // Write Rec_* totals
     const sizes = getSizes();
-    for (const s of sizes) {
-      patch[`Rec_${s}`] = Number(recTotals?.[s] ?? 0);
-    }
+    for (const s of sizes) patch[`Rec_${s}`] = Number(recTotals?.[s] ?? 0);
 
     const updated = await updateRecord(id, patch);
     res.json({ ok: true, updated });
@@ -124,7 +159,6 @@ app.get("/api/shopify/barcode/:barcode", requireAuth, async (req, res) => {
     const v = await lookupVariantByBarcode(barcode);
     if (!v) return res.json({ ok: true, found: false });
 
-    // Fetch full product variants to build size→inventoryItem map
     const product = await fetchProductVariants(v.productId);
 
     res.json({
@@ -141,24 +175,14 @@ app.get("/api/shopify/barcode/:barcode", requireAuth, async (req, res) => {
   }
 });
 
-// ---- Shopify adjust inventory + generate PDF closeout ----
+// ---- Closeout ----
 app.post("/api/closeout", requireAuth, async (req, res) => {
   try {
     const username = req.user?.username || "unknown";
-    const {
-      po,
-      productLabel,
-      recordId,
-      sizes,
-      locations,
-      allocation, // object
-      scanned,    // object
-      shopifyProduct // optional: { productId, variants: [{sizeValue, inventoryItemId}] }
-    } = req.body || {};
-
+    const { po, productLabel, recordId, sizes, locations, allocation, scanned, shopifyProduct } = req.body || {};
     if (!recordId) return res.status(400).json({ error: "Missing recordId" });
 
-    // Compute Rec totals per size from scanned matrix
+    // Rec totals per size from scanned matrix
     const recTotals = {};
     for (const s of sizes || []) {
       recTotals[s] = (locations || []).reduce((a, loc) => a + Number(scanned?.[loc]?.[s] ?? 0), 0);
@@ -167,13 +191,12 @@ app.post("/api/closeout", requireAuth, async (req, res) => {
     // Save scan + totals to Airtable
     await updateRecord(recordId, {
       [AIRTABLE_FIELDS.SCAN_FIELD]: JSON.stringify(scanned),
-      ...Object.fromEntries((getSizes()).map(s => [`Rec_${s}`, Number(recTotals[s] ?? 0)]))
+      ...Object.fromEntries(getSizes().map((s) => [`Rec_${s}`, Number(recTotals[s] ?? 0)]))
     });
 
     // Shopify adjustments (optional)
     let shopifyResult = { skipped: true };
     if (shopifyProduct?.productId && Array.isArray(shopifyProduct?.variants)) {
-      // map size → inventoryItemId
       const sizeToInv = new Map();
       for (const v of shopifyProduct.variants) {
         if (!v.sizeValue || !v.inventoryItemId) continue;
@@ -181,8 +204,7 @@ app.post("/api/closeout", requireAuth, async (req, res) => {
         sizeToInv.set(normalized, v.inventoryItemId);
       }
 
-      // Build changes
-      const locMap = new Map(getLocations().map(l => [l.name, l.id]));
+      const locMap = new Map(getLocations().map((l) => [l.name, l.id]));
       const changes = [];
 
       for (const loc of locations || []) {
@@ -194,15 +216,15 @@ app.post("/api/closeout", requireAuth, async (req, res) => {
           if (!invId) continue;
 
           const delta = Number(scanned?.[loc]?.[s] ?? 0);
-          if (delta !== 0) {
-            changes.push({ inventoryItemId: invId, locationId: locId, delta });
-          }
+          if (delta !== 0) changes.push({ inventoryItemId: invId, locationId: locId, delta });
         }
       }
 
       const result = await adjustInventoryQuantities({ reason: "correction", changes });
       shopifyResult = result;
+
       if (!result.ok) {
+        // return real Shopify info to the client
         return res.status(400).json({ error: "Shopify inventory adjust failed", shopify: result });
       }
     }
