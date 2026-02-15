@@ -576,7 +576,7 @@ export default function App() {
   }
 
   // ---------- Mode 2: Auto Allocate ----------
-  function onAutoAllocate() function onAutoAllocate() {
+function onAutoAllocate() {
   const shipOriginal = { ...shipTotalsBySize };
 
   // helper to build allocation for a given template key (for evaluation + final)
@@ -585,7 +585,7 @@ export default function App() {
     if (!template) return null;
 
     const ship = { ...shipOriginal };
-    let nextAlloc = emptyMatrix(locations, sizes);
+    const nextAlloc = emptyMatrix(locations, sizes);
 
     // 1) Always 1 XS to Office (if possible)
     if (ship.XS >= 1 && locations.includes("Office")) {
@@ -623,6 +623,7 @@ export default function App() {
       dropMap[loc] = shouldDropStore(nextAlloc[loc], shipOriginal, sizes);
     }
 
+    // attach evaluator metadata
     nextAlloc._drop = dropMap;
     return nextAlloc;
   };
@@ -630,8 +631,8 @@ export default function App() {
   // 2) Choose best template key with "scale down" behavior if needed
   const remainingTotal = sizes.reduce((a, s) => a + Number(shipOriginal?.[s] ?? 0), 0);
   const templateKey = pickBestTemplateKeyForTotal(remainingTotal, buildAllocForKey);
-  const built = buildAllocForKey(templateKey);
 
+  let built = buildAllocForKey(templateKey); // <-- MUST be let
   if (!built) {
     setStatus("Auto Allocate failed: no templates available.");
     return;
@@ -641,9 +642,6 @@ export default function App() {
   delete built._drop;
 
   // 3) Apply final drop rules (move units to sink)
-  // Sink preference:
-  // - If Warehouse already has any units → Warehouse
-  // - Else Cedarhurst, else Bogota
   const warehouseHasAny = sizes.reduce((a, s) => a + Number(built?.["Warehouse"]?.[s] ?? 0), 0) > 0;
 
   let sink = null;
@@ -660,7 +658,9 @@ export default function App() {
   }
 
   setAlloc(built);
-  setStatus(`Auto Allocated ✅ (scale ${templateKey}) — drop rule: <7 units OR missing 2+ sizes; Office XS rule applied`);
+  setStatus(
+    `Auto Allocated ✅ (scale ${templateKey}) — drop rule: <7 units OR missing 2+ sizes; Office XS rule applied`
+  );
 }
 
 
