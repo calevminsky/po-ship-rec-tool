@@ -7,6 +7,14 @@ import { getLocations, lookupVariantByBarcode, fetchProductVariants, adjustInven
 import { buildCloseoutPdf } from "./pdf.js";
 import { buildAuthorizeUrl, exchangeCodeForToken, loadTokenFromDisk, makeState, saveTokenToDisk } from "./shopifyAuth.js";
 
+import {
+  buildAuthorizeUrl,
+  exchangeCodeForToken,
+  loadTokenFromDisk,
+  makeState,
+  saveTokenToDisk
+} from "./shopifyAuth.js";
+
 let SHOPIFY_ACCESS_TOKEN = loadTokenFromDisk(); // memory cache
 let OAUTH_STATE = null;
 
