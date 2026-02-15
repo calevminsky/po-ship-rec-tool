@@ -33,6 +33,15 @@ export async function getLocations() {
   return j(res);
 }
 
+export async function saveShip(recordId, shipDate, shipTotals) {
+  const res = await fetch(`/api/record/${encodeURIComponent(recordId)}/save-ship`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ shipDate, shipTotals })
+  });
+  return j(res);
+}
+
 export async function saveAllocation(recordId, allocObj) {
   const res = await fetch(`/api/record/${encodeURIComponent(recordId)}/save-allocation`, {
     method: "PATCH",
