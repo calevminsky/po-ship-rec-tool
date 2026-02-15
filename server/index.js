@@ -220,8 +220,8 @@ app.post("/api/closeout", requireAuth, async (req, res) => {
         }
       }
 
-      const result = await adjustInventoryQuantities({
-  name: `Closeout ${po || recordId || ""}`.trim(),
+const result = await adjustInventoryQuantities({
+  name: "available",        // <-- REQUIRED now; must be one of the allowed values
   reason: "correction",
   changes
 });
