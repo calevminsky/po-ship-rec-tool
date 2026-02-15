@@ -27,9 +27,7 @@ body{
   background: var(--bg);
 }
 
-.app{
-  min-height: 100%;
-}
+.app{ min-height: 100%; }
 
 .shell{
   max-width: 1200px;
@@ -121,9 +119,7 @@ body{
 }
 
 /* Left card */
-.lookup{
-  padding: 14px;
-}
+.lookup{ padding: 14px; }
 .cardTitle{
   font-weight: 900;
   font-size: 14px;
@@ -172,28 +168,11 @@ body{
   margin: 12px 0;
 }
 
-.metaGrid{
-  display:grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 10px;
-}
-.meta{
-  border: 1px solid var(--border);
-  border-radius: 14px;
-  padding: 10px 12px;
-  background: #fff;
-}
-.metaLabel{
-  font-size: 12px;
-  font-weight: 900;
-  color: var(--muted);
-  margin-bottom: 6px;
-}
-.metaValue{
-  font-weight: 900;
-}
 .badText{ color: var(--bad); }
 .okText{ color: var(--ok); }
+
+.okSoft{ background: var(--softOk) !important; border-color: rgba(16,185,129,0.25) !important; }
+.badSoft{ background: var(--softBad) !important; border-color: rgba(239,68,68,0.25) !important; }
 
 /* Buttons */
 .btn{
@@ -217,13 +196,9 @@ body{
 .btn.primary:hover{ filter: brightness(1.06); }
 
 /* Main card */
-.main{
-  padding: 14px;
-}
+.main{ padding: 14px; }
 
-.emptyState{
-  padding: 30px;
-}
+.emptyState{ padding: 30px; }
 .emptyTitle{
   font-size: 18px;
   font-weight: 950;
@@ -309,137 +284,6 @@ body{
   background: #fff;
 }
 
-.matrix{
-  width: 100%;
-  border-collapse: collapse;
-  min-width: 920px;
-}
-
-.matrix th, .matrix td{
-  border-bottom: 1px solid var(--border);
-  padding: 10px 10px;
-  text-align: center;
-  font-size: 13px;
-}
-
-.matrix thead th{
-  background: #f1f5f9;
-  font-weight: 950;
-  position: sticky;
-  top: 0;
-  z-index: 2;
-}
-
-.c-rowlabel{ width: 140px; text-align: left; }
-.c-edit{ width: 52px; }
-.c-date{ width: 140px; }
-.c-size{ width: 70px; }
-.c-total{ width: 120px; }
-.c-cost{ width: 140px; }
-
-.rowLabel{
-  text-align:left;
-  font-weight: 900;
-}
-
-.cellRead{
-  font-weight: 850;
-}
-.cellMuted{
-  color: var(--muted);
-  font-weight: 700;
-}
-
-.cellCenter{
-  text-align:center;
-}
-
-.strong{ font-weight: 950; }
-
-.qty{
-  width: 64px;
-  height: 38px;
-  border-radius: 12px;
-  border: 1px solid var(--border);
-  background: #fff;
-  text-align: center;
-  font-weight: 900;
-}
-
-.date{
-  width: 130px;
-  height: 38px;
-  border-radius: 12px;
-  border: 1px solid var(--border);
-  background: #fff;
-  text-align: center;
-  font-weight: 900;
-}
-
-.rowActive{
-  background: #f8fafc;
-}
-
-.check{
-  display:inline-flex;
-  align-items:center;
-  justify-content:center;
-}
-.check input{
-  width: 18px;
-  height: 18px;
-}
-
-/* Accordion */
-.accordion{
-  margin-top: 12px;
-  border: 1px solid var(--border);
-  border-radius: 18px;
-  overflow: hidden;
-  background: #fff;
-}
-.accordionHead{
-  width: 100%;
-  border: 0;
-  background: #fff;
-  padding: 14px;
-  display:flex;
-  align-items:center;
-  justify-content: space-between;
-  gap: 10px;
-  cursor: pointer;
-  text-align:left;
-}
-.accordionHead:hover{
-  background: #f8fafc;
-}
-.accordionTitle{
-  font-weight: 950;
-  font-size: 14px;
-}
-.accordionSub{
-  margin-top: 3px;
-  font-size: 12px;
-  font-weight: 800;
-  color: var(--muted);
-}
-.chev{
-  font-size: 16px;
-  color: var(--muted);
-  font-weight: 900;
-}
-.accordionBody{
-  padding: 14px;
-  border-top: 1px solid var(--border);
-  background: #fff;
-}
-
-.rowActions{
-  margin-top: 10px;
-  display:flex;
-  justify-content: flex-end;
-}
-
 /* Allocation & scan matrices */
 .matrix2{
   width: 100%;
@@ -471,6 +315,11 @@ body{
   font-weight: 900;
 }
 
+.subtleRow{
+  color: var(--muted);
+  font-weight: 900;
+}
+
 .qty2{
   width: 66px;
   height: 38px;
@@ -499,16 +348,12 @@ body{
 }
 .step:hover{ background: #f8fafc; }
 
-.totRow td{
-  background: #f8fafc;
-}
+.cellRead{ font-weight: 850; }
+.strong{ font-weight: 950; }
 
-.badHead{
-  color: var(--bad);
-}
-.badCell{
-  background: #fff1f2 !important;
-}
+.totRow td{ background: #f8fafc; }
+.badHead{ color: var(--bad); }
+.badCell{ background: #fff1f2 !important; }
 
 .tiny{
   margin-top: 4px;
@@ -517,7 +362,65 @@ body{
   font-weight: 800;
 }
 
-/* Receiving UI like screenshot */
+/* --- Mode picker / simplified workflow --- */
+.modePick { display: grid; gap: 10px; }
+.modeBtn { width: 100%; justify-content: center; }
+
+.modeBar{
+  display:flex;
+  align-items:center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.modePill{
+  padding: 10px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: #fff;
+  font-weight: 900;
+  font-size: 13px;
+}
+
+.modeTools{
+  margin-top: 10px;
+  display:flex;
+  align-items:center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.modeFlag{ font-weight: 950; }
+
+/* Shipping block */
+.shipBlock{ margin-top: 10px; }
+.shipRow{
+  display:flex;
+  align-items:center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 8px;
+}
+.dateBig{
+  width: 220px;
+  height: 42px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: #fff;
+  text-align: center;
+  font-weight: 900;
+}
+
+/* Hide stepper feel when not editing */
+.cellStepper.compact .step{ display:none; }
+
+.rowActions{
+  margin-top: 10px;
+  display:flex;
+  justify-content: flex-end;
+}
+
+/* Receiving */
 .locBar{
   border: 1px solid var(--border);
   border-radius: 16px;
@@ -603,23 +506,12 @@ body{
   align-items:center;
   flex-wrap: wrap;
 }
-.scanInput{
-  min-width: 360px;
-}
+.scanInput{ min-width: 360px; }
 .scanHint{
   margin-top: 10px;
   color: var(--muted);
   font-weight: 700;
   font-size: 12px;
-}
-
-.subTitle{
-  margin-top: 12px;
-  font-weight: 950;
-  color: var(--muted);
-  font-size: 12px;
-  letter-spacing: 0.02em;
-  text-transform: uppercase;
 }
 
 .actionsRow{
@@ -636,12 +528,131 @@ body{
   font-size: 12px;
 }
 
-.foot{
-  padding: 10px 12px;
+/* Cleaner Receiving visuals */
+.activeRow td{ background: #f8fafc; }
+
+.miniTag{
+  margin-left: 8px;
+  font-size: 11px;
+  font-weight: 950;
   color: var(--muted);
-  font-weight: 650;
-  font-size: 12px;
-  border-top: 1px solid var(--border);
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  border-radius: 999px;
+  background: #fff;
+}
+
+.summaryBar{
+  margin-top: 10px;
+  display:flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.summaryPill{
+  border: 1px solid var(--border);
+  background: #fff;
+  border-radius: 16px;
+  padding: 10px 12px;
+  min-width: 120px;
+}
+.summaryLabel{
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 900;
+}
+.summaryValue{
+  margin-top: 4px;
+  font-size: 16px;
+  font-weight: 950;
+  letter-spacing: -0.01em;
+}
+
+.summaryPanel{
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 12px;
+  background: #fff;
+}
+.summaryPanelTop{
+  display:flex;
+  align-items:center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.summaryPanelTitle{
+  font-weight: 950;
+  letter-spacing: -0.01em;
+}
+.summaryPanelTotals{
+  display:flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.sizeCards{
+  margin-top: 10px;
+  display:grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+}
+.sizeCard{
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  padding: 10px;
+  background: #fff;
+}
+.sizeCardTop{
+  display:flex;
+  align-items:baseline;
+  justify-content: space-between;
+  gap: 8px;
+}
+.sizeName{
+  font-weight: 950;
+  letter-spacing: -0.01em;
+}
+.sizeDelta{
+  font-weight: 950;
+}
+.sizeSub{
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 800;
+}
+
+/* Receiving matrix cells */
+.matrixClean td{ vertical-align: top; }
+.cellStack{
+  display:flex;
+  flex-direction: column;
+  align-items:center;
+  gap: 4px;
+}
+.cellStackActive{
+  border-radius: 14px;
+  padding: 8px 6px;
+  border: 1px solid rgba(17,24,39,0.08);
+  background: rgba(17,24,39,0.02);
+}
+.bigNum{
+  font-size: 18px;
+  font-weight: 950;
+  letter-spacing: -0.02em;
+}
+.smallSub{
+  font-size: 11px;
+  color: var(--muted);
+  font-weight: 850;
+}
+.editRow{
+  margin-top: 8px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap: 6px;
 }
 
 /* Auth page */
@@ -692,77 +703,5 @@ body{
 @media (max-width: 1050px){
   .layout{ grid-template-columns: 1fr; }
   .scanInput{ min-width: 240px; }
+  .sizeCards{ grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
-
-/* --- Mode picker / simplified workflow --- */
-.modePick { display: grid; gap: 10px; }
-.modeBtn { width: 100%; justify-content: center; }
-
-.modeBar{
-  display:flex;
-  align-items:center;
-  justify-content: space-between;
-  gap: 10px;
-}
-
-.modePill{
-  padding: 10px 12px;
-  border-radius: 999px;
-  border: 1px solid var(--border);
-  background: #fff;
-  font-weight: 900;
-  font-size: 13px;
-}
-
-.modeTools{
-  margin-top: 10px;
-  display:flex;
-  align-items:center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.modeFlag{
-  font-weight: 950;
-}
-
-/* Shipping block */
-.shipBlock{ margin-top: 10px; }
-.shipRow{
-  display:flex;
-  align-items:center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 8px;
-}
-.dateBig{
-  width: 220px;
-  height: 42px;
-  border-radius: 14px;
-  border: 1px solid var(--border);
-  background: #fff;
-  text-align: center;
-  font-weight: 900;
-}
-
-/* Hide stepper feel when not editing */
-.cellStepper.compact .step{ display:none; }
-
-/* Receiving matrix clarity */
-.activeRow td{ background: #f8fafc; }
-.miniTag{
-  margin-left: 8px;
-  font-size: 11px;
-  font-weight: 950;
-  color: var(--muted);
-  border: 1px solid var(--border);
-  padding: 4px 8px;
-  border-radius: 999px;
-  background: #fff;
-}
-
-.recvCell{ display:flex; flex-direction: column; gap: 8px; }
-.recvActive{ outline: 2px solid rgba(17,24,39,0.10); border-radius: 12px; padding: 6px; }
-.recvTop{ display:flex; justify-content: space-between; gap: 8px; }
-.recvAlloc, .recvScan{ font-size: 12px; font-weight: 900; color: var(--muted); }
-.recvEdit{ display:flex; align-items:center; justify-content:center; gap: 6px; }
