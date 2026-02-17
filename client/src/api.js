@@ -70,6 +70,12 @@ export async function shopifyByProductId(productId) {
   return j(res);
 }
 
+// NEW: search by product title
+export async function shopifySearchByTitle(title) {
+  const res = await fetch(`/api/shopify/search?title=${encodeURIComponent(title)}`);
+  return j(res);
+}
+
 export async function linkShopifyProduct(recordId, productId) {
   const res = await fetch(`/api/record/${encodeURIComponent(recordId)}/link-shopify-product`, {
     method: "PATCH",
