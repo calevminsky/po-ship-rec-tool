@@ -38,12 +38,14 @@ const STORE_PACK_PRIORITY = ["Cedarhurst", "Bogota", "Toms River", "Teaneck Stor
 // Pack plan “shape”. These are examples and can be tuned.
 // Key is buy total (after office XS removed is effectively handled automatically).
 const PACK_PLAN_NO_XXS = [
-  { minTotal: 140, packs: { Bogota: 3, Cedarhurst: 4, "Toms River": 2, "Teaneck Store": 1 } }, // 100 allocated via packs, leftover->WH
-  { minTotal: 120, packs: { Bogota: 3, Cedarhurst: 4, "Toms River": 2, "Teaneck Store": 1 } }, // still decent store fill
-  { minTotal: 100, packs: { Bogota: 2, Cedarhurst: 4, "Toms River": 2, "Teaneck Store": 1 } }, // 90 via packs, leftover->WH
-  { minTotal: 80, packs: { Bogota: 2, Cedarhurst: 3, "Toms River": 1, "Teaneck Store": 2 } }, // your example: 80 exactly
+  { minTotal: 140, packs: { Bogota: 3, Cedarhurst: 4, "Toms River": 2, "Teaneck Store": 1 } },
+  { minTotal: 120, packs: { Bogota: 3, Cedarhurst: 4, "Toms River": 2, "Teaneck Store": 1 } },
+  { minTotal: 100, packs: { Bogota: 2, Cedarhurst: 4, "Toms River": 2, "Teaneck Store": 1 } },
+  { minTotal: 80, packs: { Bogota: 2, Cedarhurst: 3, "Toms River": 1, "Teaneck Store": 2 } },
+  { minTotal: 70, packs: { Bogota: 2, Cedarhurst: 3, "Toms River": 1, "Teaneck Store": 1 } }, // ✅ NEW
   { minTotal: 60, packs: { Bogota: 2, Cedarhurst: 2, "Toms River": 1, "Teaneck Store": 1 } }
 ];
+
 
 const PACK_PLAN_WITH_XXS = [
   { minTotal: 154, packs: { Bogota: 3, Cedarhurst: 4, "Toms River": 2, "Teaneck Store": 1 } }, // 10 packs * 11 = 110, leftover->WH
@@ -437,130 +439,159 @@ export default function App() {
 
   // ---------- Mode 2: Auto Allocate (pack-based, BUY-based) ----------
   function onAutoAllocate() {
-    if (!selected) return;
+  if (!selected) return;
 
-    const nextAlloc = emptyMatrix(locations, sizes);
+  const nextAlloc = emptyMatrix(locations, sizes);
 
-    // Base is BUY totals
-    let buy = {};
-    for (const s of sizes) buy[s] = Number(selected?.buy?.[s] ?? 0);
+  // Base is BUY totals (DO NOT subtract Office before planning/packs)
+  const buy = {};
+  for (const s of sizes) buy[s] = Number(selected?.buy?.[s] ?? 0);
 
-    // Overage = ship - buy goes to Warehouse
-    const ship = { ...shipTotalsBySize };
-    const overage = {};
-    for (const s of sizes) {
-      const diff = Number(ship?.[s] ?? 0) - Number(buy?.[s] ?? 0);
-      overage[s] = diff > 0 ? diff : 0;
-    }
-
-    // Office: 1 XS first (from BUY)
-    if (locations.includes("Office") && (buy.XS ?? 0) >= 1) {
-      nextAlloc["Office"]["XS"] = 1;
-      buy.XS -= 1;
-    }
-
-    const hasXXS = Number(buy.XXS ?? 0) > 0;
-    const packScale = hasXXS ? PACK_WITH_XXS : PACK_NO_XXS;
-
-    // Pick store pack plan based on BUY total (after office)
-    const remainingTotal = sizes.reduce((a, s) => a + Number(buy?.[s] ?? 0), 0);
-    let plan = pickPlan(remainingTotal, hasXXS);
-
-    // If ignoreTeaneck, remove it from plan
-    if (ignoreTeaneck) {
-      const { ["Teaneck Store"]: _t, ...rest } = plan;
-      plan = rest;
-    }
-
-    // Allocate packs to stores, but limited by size availability
-    let inv = { ...buy };
-
-    // If no XXS mode, make sure XXS stays untouched (it'll go to Warehouse)
-    // (Pack scale doesn’t use XXS in that case.)
-    const stores = Object.keys(plan || {});
-
-    // Determine max packs we can make
-    const maxPossiblePacks = computeMaxPacksAvailable(inv, packScale);
-
-    // Desired packs per store from plan
-    const desiredPacks = { ...plan };
-
-    // Sum desired
-    let desiredTotal = 0;
-    for (const s of stores) desiredTotal += Number(desiredPacks[s] ?? 0);
-
-    // If we can’t fulfill all desired packs, scale down by priority
-    // Allocate in priority order one pack at a time while inventory allows.
-    const priority = STORE_PACK_PRIORITY.filter((s) => stores.includes(s));
-    const packsGiven = Object.fromEntries(stores.map((s) => [s, 0]));
-
-    let packsLeftWeCanBuild = maxPossiblePacks;
-
-    // Greedy distribution: give each store up to desired count, in priority order cycling.
-    // This keeps “shape” while respecting size constraints.
-    while (packsLeftWeCanBuild > 0) {
-      let gaveAny = false;
-
-      for (const store of priority) {
-        if (packsLeftWeCanBuild <= 0) break;
-        const want = Number(desiredPacks[store] ?? 0);
-        if (packsGiven[store] >= want) continue;
-
-        // check if we can still build 1 more pack
-        const canBuild = computeMaxPacksAvailable(inv, packScale);
-        if (canBuild <= 0) {
-          packsLeftWeCanBuild = 0;
-          break;
-        }
-
-        // give 1 pack
-        packsGiven[store] += 1;
-        inv = subtractPack(inv, packScale, 1);
-        gaveAny = true;
-        packsLeftWeCanBuild -= 1;
-      }
-
-      if (!gaveAny) break;
-    }
-
-    // Apply packs to allocation matrix
-    let built = nextAlloc;
-    for (const store of stores) {
-      const count = Number(packsGiven[store] ?? 0);
-      if (count <= 0) continue;
-      built = addPackToMatrix(built, store, packScale, count);
-    }
-
-    // Leftover BUY inventory goes to Warehouse
-    if (locations.includes("Warehouse")) {
-      for (const s of sizes) {
-        built["Warehouse"][s] = Number(built["Warehouse"][s] ?? 0) + Number(inv[s] ?? 0);
-      }
-    } else {
-      // if Warehouse missing for some reason, dump into first location
-      const sink = locations[0];
-      for (const s of sizes) {
-        built[sink][s] = Number(built[sink][s] ?? 0) + Number(inv[s] ?? 0);
-      }
-    }
-
-    // Add SHIP overage to Warehouse as well
-    if (locations.includes("Warehouse")) {
-      for (const s of sizes) {
-        built["Warehouse"][s] = Number(built["Warehouse"][s] ?? 0) + Number(overage[s] ?? 0);
-      }
-    }
-
-    // Force Teaneck row to 0 if ignored (visual + prevents accidental carry)
-    if (ignoreTeaneck && locations.includes("Teaneck Store")) {
-      for (const s of sizes) built["Teaneck Store"][s] = 0;
-    }
-
-    setAlloc(built);
-    setStatus(
-      `Auto Allocated ✅ Packs (${hasXXS ? "11" : "10"}) based on BUY; Overage→Warehouse; Ignore Teaneck ${ignoreTeaneck ? "ON" : "OFF"}`
-    );
+  // Overage = ship - buy goes to Warehouse (per size)
+  const ship = { ...shipTotalsBySize };
+  const overage = {};
+  for (const s of sizes) {
+    const diff = Number(ship?.[s] ?? 0) - Number(buy?.[s] ?? 0);
+    overage[s] = diff > 0 ? diff : 0;
   }
+
+  // Pack mode determined from BUY (not office-adjusted)
+  const hasXXS = Number(buy.XXS ?? 0) > 0;
+  const packScale = hasXXS ? PACK_WITH_XXS : PACK_NO_XXS;
+
+  // ✅ Pick plan based on FULL BUY total (Fix B)
+  const totalBuy = sizes.reduce((a, s) => a + Number(buy?.[s] ?? 0), 0);
+  const plan = pickPlan(totalBuy, hasXXS);
+
+  // ✅ Do NOT remove Teaneck from plan (Fix C)
+  // We will move Teaneck → Warehouse AFTER allocation if ignoreTeaneck is ON.
+
+  // Allocate packs to stores, but limited by size availability
+  let inv = { ...buy };
+
+  const stores = Object.keys(plan || {});
+  const desiredPacks = { ...plan };
+
+  // Determine max packs we can make from inventory
+  const maxPossiblePacks = computeMaxPacksAvailable(inv, packScale);
+
+  // Priority order for distributing limited packs
+  const priority = STORE_PACK_PRIORITY.filter((s) => stores.includes(s));
+
+  // If priority list doesn't include a store (rare), append it
+  for (const s of stores) if (!priority.includes(s)) priority.push(s);
+
+  const packsGiven = Object.fromEntries(stores.map((s) => [s, 0]));
+  let packsLeftWeCanBuild = maxPossiblePacks;
+
+  // Greedy distribution: one pack at a time following priority, up to desired
+  while (packsLeftWeCanBuild > 0) {
+    let gaveAny = false;
+
+    for (const store of priority) {
+      if (packsLeftWeCanBuild <= 0) break;
+
+      const want = Number(desiredPacks[store] ?? 0);
+      if (packsGiven[store] >= want) continue;
+
+      const canBuild = computeMaxPacksAvailable(inv, packScale);
+      if (canBuild <= 0) {
+        packsLeftWeCanBuild = 0;
+        break;
+      }
+
+      packsGiven[store] += 1;
+      inv = subtractPack(inv, packScale, 1);
+      gaveAny = true;
+      packsLeftWeCanBuild -= 1;
+    }
+
+    if (!gaveAny) break;
+  }
+
+  // Apply packs to matrix
+  let built = nextAlloc;
+  for (const store of stores) {
+    const count = Number(packsGiven[store] ?? 0);
+    if (count <= 0) continue;
+    built = addPackToMatrix(built, store, packScale, count);
+  }
+
+  // Leftover BUY inventory goes to Warehouse
+  if (locations.includes("Warehouse")) {
+    for (const s of sizes) {
+      built["Warehouse"][s] = Number(built["Warehouse"][s] ?? 0) + Number(inv[s] ?? 0);
+    }
+  } else {
+    const sink = locations[0];
+    for (const s of sizes) {
+      built[sink][s] = Number(built[sink][s] ?? 0) + Number(inv[s] ?? 0);
+    }
+  }
+
+  // Add SHIP overage to Warehouse as well
+  if (locations.includes("Warehouse")) {
+    for (const s of sizes) {
+      built["Warehouse"][s] = Number(built["Warehouse"][s] ?? 0) + Number(overage[s] ?? 0);
+    }
+  }
+
+  // ✅ Fix C: If Ignore Teaneck is ON, move Teaneck allocation into Warehouse (not delete from plan)
+  if (ignoreTeaneck && locations.includes("Teaneck Store") && locations.includes("Warehouse")) {
+    for (const s of sizes) {
+      const tn = Number(built?.["Teaneck Store"]?.[s] ?? 0);
+      if (tn !== 0) {
+        built["Warehouse"][s] = Number(built["Warehouse"][s] ?? 0) + tn;
+        built["Teaneck Store"][s] = 0;
+      }
+    }
+  }
+
+  // ✅ Fix B: Office XS comes LAST and should not reduce pack-building
+  if (locations.includes("Office")) {
+    // Ensure Office row exists
+    if (!built["Office"]) built["Office"] = {};
+    for (const s of sizes) if (built["Office"][s] == null) built["Office"][s] = 0;
+
+    const takeFrom = (loc, size, qty) => {
+      const have = Number(built?.[loc]?.[size] ?? 0);
+      const take = Math.min(have, qty);
+      if (take > 0) {
+        built[loc][size] = have - take;
+        built["Office"][size] = Number(built["Office"][size] ?? 0) + take;
+      }
+      return take;
+    };
+
+    let remaining = 1;
+
+    // Prefer from Warehouse XS first (this includes overage + leftovers)
+    if (remaining > 0 && locations.includes("Warehouse")) {
+      remaining -= takeFrom("Warehouse", "XS", remaining);
+    }
+
+    // If still missing, take from the store with most XS
+    if (remaining > 0) {
+      const candidateStores = ["Cedarhurst", "Bogota", "Toms River", "Teaneck Store"].filter((l) => locations.includes(l));
+      let best = null;
+      let bestXS = -1;
+      for (const loc of candidateStores) {
+        const haveXS = Number(built?.[loc]?.["XS"] ?? 0);
+        if (haveXS > bestXS) {
+          bestXS = haveXS;
+          best = loc;
+        }
+      }
+      if (best) remaining -= takeFrom(best, "XS", remaining);
+    }
+  }
+
+  setAlloc(built);
+  setStatus(
+    `Auto Allocated ✅ Packs (${hasXXS ? "11" : "10"}) based on BUY; Overage→Warehouse; Ignore Teaneck ${ignoreTeaneck ? "ON" : "OFF"}`
+  );
+}
+
 
   // ---------- Mode 2: Save Allocation ----------
   async function onSaveAllocation() {
