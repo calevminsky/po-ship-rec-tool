@@ -4,7 +4,13 @@ import { fileURLToPath } from "url";
 import cookieParser from "cookie-parser";
 
 import { listRecordsByPO, updateRecord, getSizes, AIRTABLE_FIELDS } from "./airtable.js";
-import { getLocations, lookupVariantByBarcode, fetchProductVariants, adjustInventoryQuantities } from "./shopify.js";
+import {
+  getLocations,
+  lookupVariantByBarcode,
+  fetchProductVariants,
+  adjustInventoryQuantities,
+  searchProductsByTitle // NEW
+} from "./shopify.js";
 import { buildCloseoutPdf } from "./pdf.js";
 
 import { buildAuthorizeUrl, exchangeCodeForToken, makeState } from "./shopifyAuth.js";
@@ -220,6 +226,19 @@ app.get("/api/shopify/product/:productId", requireAuth, async (req, res) => {
     });
   } catch (e) {
     res.status(500).json({ error: e.message || "Shopify product fetch error" });
+  }
+});
+
+// NEW: search Shopify products by title
+app.get("/api/shopify/search", requireAuth, async (req, res) => {
+  try {
+    const title = String(req.query?.title || "").trim();
+    if (!title) return res.status(400).json({ error: "Missing title" });
+
+    const products = await searchProductsByTitle(title, 10);
+    res.json({ ok: true, products });
+  } catch (e) {
+    res.status(500).json({ error: e.message || "Shopify product search error" });
   }
 });
 
