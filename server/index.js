@@ -379,3 +379,17 @@ app.get("*", (req, res) => res.sendFile(path.join(clientDist, "index.html")));
 
 const port = process.env.PORT || 10000;
 app.listen(port, () => console.log(`Server running on :${port}`));
+
+app.get("/api/shopify/search", requireAuth, async (req, res) => {
+  try {
+    const title = String(req.query.title || "").trim();
+    if (!title)
+      return res.status(400).json({ error: "Missing title" });
+
+    const products = await searchProductsByTitle(title, 10);
+    res.json({ ok: true, products });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
