@@ -121,6 +121,32 @@ export async function fetchProductVariants(productId) {
   return { productId: p.id, title: p.title, variants };
 }
 
+// NEW: Search products by title (for manual Shopify linking)
+export async function searchProductsByTitle(title, first = 10) {
+  const q = `
+    query ProductSearch($q: String!, $first: Int!) {
+      products(first: $first, query: $q) {
+        edges {
+          node {
+            id
+            title
+          }
+        }
+      }
+    }
+  `;
+
+  const queryString = `title:*${title}*`;
+  const { ok, status, json } = await shopifyGraphQL(q, { q: queryString, first });
+
+  if (!ok || json.errors) {
+    throw new Error(`Shopify product search failed (${status}): ${JSON.stringify(json.errors || json)}`);
+  }
+
+  const edges = json?.data?.products?.edges || [];
+  return edges.map((e) => ({ productId: e.node.id, title: e.node.title }));
+}
+
 // Ensure an inventory item is stocked at a location (otherwise adjust fails)
 async function inventoryActivate(inventoryItemId, locationId) {
   const m = `
