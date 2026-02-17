@@ -10,6 +10,7 @@ import {
   saveScan,
   shopifyByBarcode,
   shopifyByProductId,
+  shopifySearchByTitle,
   linkShopifyProduct,
   closeoutPdf
 } from "./api.js";
@@ -362,6 +363,9 @@ export default function App() {
   const [poInput, setPoInput] = useState("");
   const [poData, setPoData] = useState(null);
   const [selectedId, setSelectedId] = useState("");
+
+  const [ignoreTeaneck, setIgnoreTeaneck] = useState(false);
+
 
   const sizes = SIZES;
   const records = poData?.records || [];
@@ -1129,6 +1133,16 @@ export default function App() {
                         {allocEdit ? "Done Editing" : "Edit Allocation"}
                       </button>
 
+<label style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: 12 }}>
+  <input
+    type="checkbox"
+    checked={ignoreTeaneck}
+    onChange={(e) => setIgnoreTeaneck(e.target.checked)}
+  />
+  Ignore Teaneck
+</label>
+
+                      
                       <div className={`modeFlag ${allocMatchesShip ? "okText" : "badText"}`}>
                         {allocMatchesShip ? "Totals match Ship Units" : "Totals do NOT match Ship Units"}
                       </div>
