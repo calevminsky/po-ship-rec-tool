@@ -19,8 +19,8 @@ import {
  * NOTE:
  * - Sizes are columns, locations are rows.
  * - Auto allocation uses an "allocation scale" template (from your Allocation Guide)
- *   and applies per-size ratios (template ratios) to the actual shipped per-size totals.
- * - Always allocate 1 XS to "Office" (if XS >= 1), before allocating the remainder.
+ *   and applies per-size ratios (template ratios) to the actual bought/shipped per-size totals.
+ * - Always allocate 1 XS to "Office" (if possible), before allocating the remainder.
  * - Fill priority for rounding leftovers: Bogota, Cedarhurst, Toms River, Teaneck Store, Warehouse
  * - If underage makes a store too incomplete, we "drop" that store and move its units to a sink:
  *   Warehouse if Warehouse already has any units, else Cedarhurst.
@@ -299,9 +299,7 @@ function shouldDropStore(storeRow, shippedTotalsBySize, sizes) {
 
   const missing = missingFullSizesCount(storeRow, shippedTotalsBySize, sizes);
 
-  // NEW RULE:
-  // - drop if < 7 units total
-  // - OR missing 2+ full sizes
+  // drop if < 7 units total OR missing 2+ full sizes
   return rowTotal < 7 || missing >= 2;
 }
 
@@ -364,9 +362,6 @@ export default function App() {
   const [poData, setPoData] = useState(null);
   const [selectedId, setSelectedId] = useState("");
 
-  const [ignoreTeaneck, setIgnoreTeaneck] = useState(false);
-
-
   const sizes = SIZES;
   const records = poData?.records || [];
   const selected = useMemo(() => records.find((r) => r.id === selectedId) || null, [records, selectedId]);
@@ -391,6 +386,7 @@ export default function App() {
   // Allocation (Mode 2)
   const [alloc, setAlloc] = useState(() => emptyMatrix(DEFAULT_LOCATIONS, SIZES));
   const [allocEdit, setAllocEdit] = useState(false);
+  const [ignoreTeaneck, setIgnoreTeaneck] = useState(false); // NEW
 
   // Receiving (Mode 3)
   const [scan, setScan] = useState(() => emptyMatrix(DEFAULT_LOCATIONS, SIZES));
@@ -405,6 +401,11 @@ export default function App() {
   const [shopifyProduct, setShopifyProduct] = useState(null);
   const [barcodeLinkInput, setBarcodeLinkInput] = useState("");
   const [barcodeMap, setBarcodeMap] = useState({});
+
+  // NEW: Shopify search + manual selection
+  const [shopifyTitleQuery, setShopifyTitleQuery] = useState("");
+  const [shopifySearchResults, setShopifySearchResults] = useState([]);
+  const [shopifySelectedProductId, setShopifySelectedProductId] = useState("");
 
   // Derived
   const unitCost = Number(selected?.unitCost ?? 0);
@@ -518,6 +519,7 @@ export default function App() {
 
     // Reset receiving/shopify state when changing product
     setAllocEdit(false);
+    setIgnoreTeaneck(false);
     setScanEdit(false);
     setShopifyLinked(false);
     setShopifyProduct(null);
@@ -525,6 +527,10 @@ export default function App() {
     setBarcodeMap({});
     setScanBarcode("");
     setLastScanStack([]);
+
+    setShopifyTitleQuery("");
+    setShopifySearchResults([]);
+    setShopifySelectedProductId("");
 
     setStatus("");
 
@@ -581,28 +587,54 @@ export default function App() {
 
   // ---------- Mode 2: Auto Allocate ----------
   function onAutoAllocate() {
-    const shipOriginal = { ...shipTotalsBySize };
+    // Rule:
+    // - choose scale based on BOUGHT total
+    // - allocate by size using MIN(BOUGHT, SHIPPED)
+    // - any extra SHIPPED beyond BOUGHT goes to Warehouse (per size)
+    // - if Ignore Teaneck checked: do not allocate to Teaneck at all; redistribute among remaining template locations
 
-    // helper to build allocation for a given template key (for evaluation + final)
+    const shipOriginal = { ...shipTotalsBySize };
+    const buyOriginal = { ...buyTotalsBySize };
+
+    const baseBySize = {};
+    const extraToWarehouseBySize = {};
+    for (const s of sizes) {
+      const shipQty = Number(shipOriginal?.[s] ?? 0);
+      const buyQty = Number(buyOriginal?.[s] ?? 0);
+
+      const base = Math.min(shipQty, buyQty);
+      baseBySize[s] = base;
+
+      const extra = shipQty - base;
+      extraToWarehouseBySize[s] = extra > 0 ? extra : 0;
+    }
+
+    const boughtTotal = sizes.reduce((a, s) => a + Number(buyOriginal?.[s] ?? 0), 0);
+
     const buildAllocForKey = (templateKey) => {
       const template = ALLOC_TEMPLATES[templateKey];
       if (!template) return null;
 
-      const ship = { ...shipOriginal };
+      const base = { ...baseBySize };
       const nextAlloc = emptyMatrix(locations, sizes);
 
-      // 1) Always 1 XS to Office (if possible)
-      if (ship.XS >= 1 && locations.includes("Office")) {
+      // Office XS rule (use BASE counts)
+      if (base.XS >= 1 && locations.includes("Office")) {
         nextAlloc["Office"]["XS"] = 1;
-        ship.XS -= 1;
+        base.XS -= 1;
       }
 
-      // Only allocate across these template locations (skip Office)
-      const templateLocs = Object.keys(template).filter((l) => locations.includes(l));
+      // Template locations (skip Office, and optionally ignore Teaneck)
+      let templateLocs = Object.keys(template).filter((l) => locations.includes(l) && l !== "Office");
+      if (ignoreTeaneck) templateLocs = templateLocs.filter((l) => l !== "Teaneck Store");
+
+      // If we ignored Teaneck and somehow have no locs left, fail gracefully
+      if (!templateLocs.length) return null;
+
       const priority = FILL_PRIORITY.filter((l) => templateLocs.includes(l));
 
       for (const size of sizes) {
-        const qty = Number(ship?.[size] ?? 0);
+        const qty = Number(base?.[size] ?? 0);
         if (!qty) continue;
 
         // XXS follows XS ratios
@@ -610,8 +642,21 @@ export default function App() {
         if (!["XS", "S", "M", "L", "XL"].includes(ratioSize)) ratioSize = "XS";
 
         const ratiosAll = computeRatiosFromTemplate(template, ratioSize);
+
+        // Filter ratios down to templateLocs and renormalize
         const ratios = {};
-        for (const loc of templateLocs) ratios[loc] = ratiosAll[loc] || 0;
+        let sumR = 0;
+        for (const loc of templateLocs) {
+          const r = Number(ratiosAll?.[loc] ?? 0);
+          ratios[loc] = r;
+          sumR += r;
+        }
+        if (sumR <= 0) {
+          // fallback: equal split
+          for (const loc of templateLocs) ratios[loc] = 1 / templateLocs.length;
+        } else {
+          for (const loc of templateLocs) ratios[loc] = ratios[loc] / sumR;
+        }
 
         const apportioned = apportionInteger(qty, ratios, priority);
 
@@ -620,32 +665,49 @@ export default function App() {
         }
       }
 
-      // Evaluate drop-worthiness (but DON'T move units yet in the evaluator)
+      // Put extra shipped into Warehouse
+      if (locations.includes("Warehouse")) {
+        for (const s of sizes) {
+          const extra = Number(extraToWarehouseBySize?.[s] ?? 0);
+          if (extra > 0) nextAlloc["Warehouse"][s] = Number(nextAlloc["Warehouse"][s] ?? 0) + extra;
+        }
+      } else {
+        // If Warehouse location doesn't exist, dump extras into Cedarhurst/Bogota fallback
+        const fallback =
+          locations.includes("Cedarhurst") ? "Cedarhurst" : locations.includes("Bogota") ? "Bogota" : locations[0];
+        for (const s of sizes) {
+          const extra = Number(extraToWarehouseBySize?.[s] ?? 0);
+          if (extra > 0) nextAlloc[fallback][s] = Number(nextAlloc[fallback][s] ?? 0) + extra;
+        }
+      }
+
+      // Evaluate drop-worthiness (use SHIPPED totals as the "full sizes" reference)
       const dropMap = {};
       for (const loc of ["Toms River", "Teaneck Store"]) {
         if (!locations.includes(loc)) continue;
+        if (ignoreTeaneck && loc === "Teaneck Store") {
+          dropMap[loc] = false;
+          continue;
+        }
         dropMap[loc] = shouldDropStore(nextAlloc[loc], shipOriginal, sizes);
       }
 
-      // attach evaluator metadata
       nextAlloc._drop = dropMap;
       return nextAlloc;
     };
 
-    // 2) Choose best template key with "scale down" behavior if needed
-    const remainingTotal = sizes.reduce((a, s) => a + Number(shipOriginal?.[s] ?? 0), 0);
-    const templateKey = pickBestTemplateKeyForTotal(remainingTotal, buildAllocForKey);
+    // Choose best template based on BOUGHT total (scale-down behavior)
+    const templateKey = pickBestTemplateKeyForTotal(boughtTotal, buildAllocForKey);
 
-    let built = buildAllocForKey(templateKey); // <-- MUST be let
+    let built = buildAllocForKey(templateKey);
     if (!built) {
-      setStatus("Auto Allocate failed: no templates available.");
+      setStatus("Auto Allocate failed: no templates available (or no locations after Ignore Teaneck).");
       return;
     }
 
-    // Strip evaluator metadata
     delete built._drop;
 
-    // 3) Apply final drop rules (move units to sink)
+    // Apply drop rules (move units to sink) — only for Toms, and Teaneck if NOT ignored
     const warehouseHasAny = sizes.reduce((a, s) => a + Number(built?.["Warehouse"]?.[s] ?? 0), 0) > 0;
 
     let sink = null;
@@ -654,17 +716,32 @@ export default function App() {
     else if (locations.includes("Bogota")) sink = "Bogota";
     else sink = locations[0];
 
-    for (const loc of ["Toms River", "Teaneck Store"]) {
+    const dropCandidates = ["Toms River", ...(ignoreTeaneck ? [] : ["Teaneck Store"])];
+    for (const loc of dropCandidates) {
       if (!locations.includes(loc)) continue;
       if (shouldDropStore(built[loc], shipOriginal, sizes)) {
         built = moveRowToSink(built, loc, sink, sizes);
       }
     }
 
+    // If Ignore Teaneck is on, force Teaneck row to 0 (clean + deterministic)
+    if (ignoreTeaneck && locations.includes("Teaneck Store")) {
+      for (const s of sizes) built["Teaneck Store"][s] = 0;
+    }
+
     setAlloc(built);
-    setStatus(
-      `Auto Allocated ✅ (scale ${templateKey}) — drop rule: <7 units OR missing 2+ sizes; Office XS rule applied`
-    );
+
+    const shipTotal = sizes.reduce((a, s) => a + Number(shipOriginal?.[s] ?? 0), 0);
+    const extraTotal = sizes.reduce((a, s) => a + Number(extraToWarehouseBySize?.[s] ?? 0), 0);
+
+    const notes = [
+      `scale ${templateKey} (based on BOUGHT=${boughtTotal})`,
+      ignoreTeaneck ? "Ignore Teaneck ON" : "Ignore Teaneck OFF",
+      `extra shipped→Warehouse: ${extraTotal} (Ship=${shipTotal})`,
+      `drop rule: <7 units OR missing 2+ sizes; Office XS rule applied`
+    ].join(" — ");
+
+    setStatus(`Auto Allocated ✅ ${notes}`);
   }
 
   // ---------- Mode 2: Save Allocation ----------
@@ -693,7 +770,7 @@ export default function App() {
     }
   }
 
-  // ---------- Mode 2: Link Shopify product and write GID to Airtable ----------
+  // ---------- Shopify: link by barcode ----------
   async function onLinkShopifyAndPersist() {
     const bc = barcodeLinkInput.trim();
     if (!bc || !selectedId) return;
@@ -719,6 +796,60 @@ export default function App() {
       setStatus(`Linked + saved ✅ ${r.product.title}`);
 
       // refresh PO data so record carries saved gid in UI
+      if (poData?.po) {
+        const refreshed = await fetchPO(poData.po);
+        setPoData(refreshed);
+      }
+
+      setTimeout(() => scanInputRef.current?.focus(), 50);
+    } catch (e) {
+      setStatus(`Link failed: ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // ---------- Shopify: search + manual select ----------
+  async function onShopifySearch() {
+    const q = shopifyTitleQuery.trim();
+    if (!q) return;
+
+    try {
+      setLoading(true);
+      setStatus("Searching Shopify products…");
+      const r = await shopifySearchByTitle(q);
+
+      const products = Array.isArray(r.products) ? r.products : [];
+      setShopifySearchResults(products);
+      setShopifySelectedProductId(products[0]?.productId || "");
+      setStatus(products.length ? `Found ${products.length} product(s) ✅` : "No products found.");
+    } catch (e) {
+      setShopifySearchResults([]);
+      setShopifySelectedProductId("");
+      setStatus(`Search failed: ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function onLinkSelectedShopifyProduct() {
+    const productId = String(shopifySelectedProductId || "").trim();
+    if (!productId || !selectedId) return;
+
+    try {
+      setLoading(true);
+      setStatus("Linking selected Shopify product…");
+
+      await linkShopifyProduct(selectedId, productId);
+
+      // Load variants for scanning immediately
+      const r = await shopifyByProductId(productId);
+
+      setShopifyLinked(true);
+      setShopifyProduct(r.product);
+      setBarcodeMap(buildBarcodeMapFromProduct(r.product));
+      setStatus(`Linked + saved ✅ ${r.product?.title || "Product"}`);
+
       if (poData?.po) {
         const refreshed = await fetchPO(poData.po);
         setPoData(refreshed);
@@ -983,13 +1114,19 @@ export default function App() {
                         <div className="hint">
                           ✅ Linked in Airtable
                           <div style={{ marginTop: 8 }}>
-                            <button className="btn" onClick={() => autoLoadShopifyIfLinked(selected)} disabled={loading} type="button">
+                            <button
+                              className="btn"
+                              onClick={() => autoLoadShopifyIfLinked(selected)}
+                              disabled={loading}
+                              type="button"
+                            >
                               Refresh Shopify Variants
                             </button>
                           </div>
                         </div>
                       ) : (
                         <>
+                          {/* Option A: barcode link */}
                           <div className="hstack">
                             <input
                               className="input"
@@ -998,7 +1135,7 @@ export default function App() {
                               onKeyDown={(e) => {
                                 if (e.key === "Enter") onLinkShopifyAndPersist();
                               }}
-                              placeholder="Scan/enter ANY variant barcode…"
+                              placeholder="Option A: Scan/enter ANY variant barcode…"
                               disabled={!selected}
                             />
                             <button
@@ -1010,7 +1147,63 @@ export default function App() {
                               Link
                             </button>
                           </div>
-                          <div className="hint">This writes the Shopify Product GID to Airtable so it auto-loads next time.</div>
+
+                          <div style={{ margin: "10px 0" }} className="divider" />
+
+                          {/* Option B: search by title + select */}
+                          <div className="hstack">
+                            <input
+                              className="input"
+                              value={shopifyTitleQuery}
+                              onChange={(e) => setShopifyTitleQuery(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") onShopifySearch();
+                              }}
+                              placeholder="Option B: Search Shopify by product title…"
+                              disabled={!selected}
+                            />
+                            <button
+                              className="btn"
+                              onClick={onShopifySearch}
+                              disabled={!selected || loading || !shopifyTitleQuery.trim()}
+                              type="button"
+                            >
+                              Search
+                            </button>
+                          </div>
+
+                          {shopifySearchResults.length ? (
+                            <>
+                              <div style={{ marginTop: 8 }}>
+                                <select
+                                  className="select"
+                                  value={shopifySelectedProductId}
+                                  onChange={(e) => setShopifySelectedProductId(e.target.value)}
+                                >
+                                  {shopifySearchResults.map((p) => (
+                                    <option key={p.productId} value={p.productId}>
+                                      {p.title}
+                                    </option>
+                                  ))}
+                                </select>
+                              </div>
+
+                              <div style={{ marginTop: 8 }}>
+                                <button
+                                  className="btn"
+                                  onClick={onLinkSelectedShopifyProduct}
+                                  disabled={loading || !shopifySelectedProductId}
+                                  type="button"
+                                >
+                                  Link Selected Product
+                                </button>
+                              </div>
+                            </>
+                          ) : null}
+
+                          <div className="hint" style={{ marginTop: 8 }}>
+                            Linking writes the Shopify Product GID to Airtable so it auto-loads next time.
+                          </div>
                         </>
                       )}
                     </div>
@@ -1122,7 +1315,6 @@ export default function App() {
                       Sizes are columns. Locations are rows. Use Auto Allocate first, then do minimal manual edits.
                     </div>
 
-                    {/* REQUIRED: totals per size above matrix */}
                     <BuyShipTotalsRow sizes={sizes} buyTotals={buyTotalsBySize} shipTotals={shipTotalsBySize} />
 
                     <div className="modeTools">
@@ -1133,16 +1325,16 @@ export default function App() {
                         {allocEdit ? "Done Editing" : "Edit Allocation"}
                       </button>
 
-<label style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: 12 }}>
-  <input
-    type="checkbox"
-    checked={ignoreTeaneck}
-    onChange={(e) => setIgnoreTeaneck(e.target.checked)}
-  />
-  Ignore Teaneck
-</label>
+                      {/* NEW: Ignore Teaneck checkbox */}
+                      <label style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: 12 }}>
+                        <input
+                          type="checkbox"
+                          checked={ignoreTeaneck}
+                          onChange={(e) => setIgnoreTeaneck(e.target.checked)}
+                        />
+                        Ignore Teaneck
+                      </label>
 
-                      
                       <div className={`modeFlag ${allocMatchesShip ? "okText" : "badText"}`}>
                         {allocMatchesShip ? "Totals match Ship Units" : "Totals do NOT match Ship Units"}
                       </div>
@@ -1226,10 +1418,8 @@ export default function App() {
                       <div className="scanHint">Tip: over-scans prompt for override. Wrong barcode warns.</div>
                     </div>
 
-                    {/* Clean, Apple-ish summary for the ACTIVE location */}
                     <ActiveLocSummary activeLoc={activeLoc} sizes={sizes} alloc={alloc} scan={scan} />
 
-                    {/* Cleaner matrix: big scanned number, small "of alloc" */}
                     <ReceivingMatrixClean
                       locations={locations}
                       sizes={sizes}
