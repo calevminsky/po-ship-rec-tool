@@ -78,12 +78,14 @@ app.post("/api/logout", (req, res) => {
 });
 
 // -------------------- SHOPIFY OAUTH --------------------
+// Start OAuth (you can keep this, even if you eventually move to a fixed token)
 app.get("/api/shopify/auth", requireAuth, (req, res) => {
   OAUTH_STATE = makeState();
   const url = buildAuthorizeUrl(OAUTH_STATE);
   res.redirect(url);
 });
 
+// OAuth callback
 app.get("/api/shopify/callback", requireAuth, async (req, res) => {
   try {
     const { code, state } = req.query;
@@ -93,12 +95,14 @@ app.get("/api/shopify/callback", requireAuth, async (req, res) => {
     const token = await exchangeCodeForToken(code);
     setShopifyAccessToken(token);
 
+    // back to app
     res.redirect("/?shopify=connected");
   } catch (e) {
     res.status(500).send(`Shopify auth failed: ${e.message}`);
   }
 });
 
+// Token status
 app.get("/api/shopify/status", requireAuth, (req, res) => {
   res.json({ ok: true, hasToken: hasShopifyAccessToken() });
 });
@@ -238,7 +242,7 @@ app.get("/api/shopify/search", requireAuth, async (req, res) => {
   }
 });
 
-// ---- Link Airtable record to Shopify product ----
+// ---- Link Airtable record to Shopify product (writes Product GID into Airtable) ----
 app.patch("/api/record/:id/link-shopify-product", requireAuth, async (req, res) => {
   try {
     const id = req.params.id;
@@ -259,16 +263,19 @@ app.post("/api/closeout", requireAuth, async (req, res) => {
     const { po, productLabel, recordId, sizes, locations, allocation, scanned, shopifyProduct } = req.body || {};
     if (!recordId) return res.status(400).json({ error: "Missing recordId" });
 
+    // Rec totals per size from scanned matrix
     const recTotals = {};
     for (const s of sizes || []) {
       recTotals[s] = (locations || []).reduce((a, loc) => a + Number(scanned?.[loc]?.[s] ?? 0), 0);
     }
 
+    // Save scan + totals to Airtable
     await updateRecord(recordId, {
       [AIRTABLE_FIELDS.SCAN_FIELD]: JSON.stringify(scanned),
       ...Object.fromEntries(getSizes().map((s) => [`Rec_${s}`, Number(recTotals[s] ?? 0)]))
     });
 
+    // Shopify adjustments (optional)
     let shopifyResult = { skipped: true };
     if (shopifyProduct?.productId && Array.isArray(shopifyProduct?.variants)) {
       const sizeToInv = new Map();
@@ -307,6 +314,7 @@ app.post("/api/closeout", requireAuth, async (req, res) => {
       }
     }
 
+    // PDF
     const createdAtISO = new Date().toISOString();
     const pdfBuffer = await buildCloseoutPdf({
       username,
