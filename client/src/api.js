@@ -70,7 +70,7 @@ export async function shopifyByProductId(productId) {
   return j(res);
 }
 
-// NEW: search by product title
+// NEW
 export async function shopifySearchByTitle(title) {
   const res = await fetch(`/api/shopify/search?title=${encodeURIComponent(title)}`);
   return j(res);
