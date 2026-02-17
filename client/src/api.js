@@ -1,102 +1,123 @@
-async function j(res) {
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data?.error || "Request failed");
-  return data;
-}
-
 export async function fetchPO(po) {
-  const res = await fetch(`/api/po/${encodeURIComponent(po)}`);
-  return j(res);
+  const r = await fetch(`/api/po/${encodeURIComponent(po)}`);
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || "Failed to load PO");
+  return j;
 }
 
 export async function me() {
-  const res = await fetch("/api/me");
-  return j(res);
+  const r = await fetch("/api/me");
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || "Not authenticated");
+  return j;
 }
 
 export async function login(username, password) {
-  const res = await fetch("/api/login", {
+  const r = await fetch("/api/login", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ username, password })
   });
-  return j(res);
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || "Login failed");
+  return j;
 }
 
 export async function logout() {
-  const res = await fetch("/api/logout", { method: "POST" });
-  return j(res);
+  const r = await fetch("/api/logout", { method: "POST" });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || "Logout failed");
+  return j;
 }
 
 export async function getLocations() {
-  const res = await fetch("/api/locations");
-  return j(res);
+  const r = await fetch("/api/locations");
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || "Failed to load locations");
+  return j;
 }
 
 export async function saveShip(recordId, shipDate, shipTotals) {
-  const res = await fetch(`/api/record/${encodeURIComponent(recordId)}/save-ship`, {
+  const r = await fetch(`/api/record/${encodeURIComponent(recordId)}/save-ship`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ shipDate, shipTotals })
   });
-  return j(res);
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || "Failed to save shipping");
+  return j;
 }
 
-export async function saveAllocation(recordId, allocObj) {
-  const res = await fetch(`/api/record/${encodeURIComponent(recordId)}/save-allocation`, {
+export async function saveAllocation(recordId, allocMatrix) {
+  const r = await fetch(`/api/record/${encodeURIComponent(recordId)}/save-allocation`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ allocJson: JSON.stringify(allocObj) })
+    body: JSON.stringify({ allocJson: JSON.stringify(allocMatrix) })
   });
-  return j(res);
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || "Failed to save allocation");
+  return j;
 }
 
-export async function saveScan(recordId, scanObj, recTotals) {
-  const res = await fetch(`/api/record/${encodeURIComponent(recordId)}/save-scan`, {
+export async function saveScan(recordId, scanMatrix, recTotals) {
+  const r = await fetch(`/api/record/${encodeURIComponent(recordId)}/save-scan`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ scanJson: JSON.stringify(scanObj), recTotals })
+    body: JSON.stringify({ scanJson: JSON.stringify(scanMatrix), recTotals })
   });
-  return j(res);
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || "Failed to save scan");
+  return j;
 }
 
 export async function shopifyByBarcode(barcode) {
-  const res = await fetch(`/api/shopify/barcode/${encodeURIComponent(barcode)}`);
-  return j(res);
+  const r = await fetch(`/api/shopify/barcode/${encodeURIComponent(barcode)}`);
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || "Shopify barcode lookup failed");
+  return j;
 }
 
 export async function shopifyByProductId(productId) {
-  const res = await fetch(`/api/shopify/product/${encodeURIComponent(productId)}`);
-  return j(res);
+  const r = await fetch(`/api/shopify/product/${encodeURIComponent(productId)}`);
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || "Shopify product fetch failed");
+  return j;
 }
 
-// NEW
+// ✅ NEW: search products by title (for manual select)
 export async function shopifySearchByTitle(title) {
-  const res = await fetch(`/api/shopify/search?title=${encodeURIComponent(title)}`);
-  return j(res);
+  const r = await fetch(`/api/shopify/search?title=${encodeURIComponent(title)}`);
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || "Shopify product search failed");
+  return j;
 }
 
 export async function linkShopifyProduct(recordId, productId) {
-  const res = await fetch(`/api/record/${encodeURIComponent(recordId)}/link-shopify-product`, {
+  const r = await fetch(`/api/record/${encodeURIComponent(recordId)}/link-shopify-product`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ productId })
   });
-  return j(res);
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || "Failed to link Shopify product");
+  return j;
 }
 
 export async function closeoutPdf(payload) {
-  const res = await fetch("/api/closeout", {
+  const r = await fetch("/api/closeout", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload)
   });
 
-  if (!res.ok) {
-    const data = await res.json().catch(() => ({}));
-    throw new Error(data?.error || "Closeout failed");
+  if (!r.ok) {
+    let msg = "Closeout failed";
+    try {
+      const j = await r.json();
+      msg = j.error || msg;
+    } catch {}
+    throw new Error(msg);
   }
 
-  const blob = await res.blob();
-  return blob;
+  return await r.blob();
 }
