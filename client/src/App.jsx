@@ -10,111 +10,46 @@ import {
   saveScan,
   shopifyByBarcode,
   shopifyByProductId,
+  shopifySearchByTitle,
   linkShopifyProduct,
   closeoutPdf
 } from "./api.js";
 
 /**
- * NOTE:
- * - Sizes are columns, locations are rows.
- * - Auto allocation uses an "allocation scale" template (from your Allocation Guide)
- *   and applies per-size ratios (template ratios) to the actual shipped per-size totals.
- * - Always allocate 1 XS to "Office" (if XS >= 1), before allocating the remainder.
- * - Fill priority for rounding leftovers: Bogota, Cedarhurst, Toms River, Teaneck Store, Warehouse
- * - If underage makes a store too incomplete, we "drop" that store and move its units to a sink:
- *   Warehouse if Warehouse already has any units, else Cedarhurst.
+ * Allocation rules (updated):
+ * - Allocation is based on BUY total.
+ * - Overage (ship - buy) goes to Warehouse.
+ * - Packs:
+ *   - With XXS: 1,3,3,2,1,1 (XXS-XL) = 11
+ *   - No XXS:  3,3,2,1,1 (XS-XL) = 10
+ * - Office: 1 XS to Office first (if XS available).
+ * - Ignore Teaneck: exclude Teaneck from store pack distribution (its would-be packs go to Warehouse).
  */
 
 const SIZES = ["XXS", "XS", "S", "M", "L", "XL"];
-const CORE_SIZES_FOR_STYLE = ["S", "M", "L"]; // used for "drop store" heuristic when underage makes a store too incomplete
-
-// This matches what you described (and what your UI uses in your tool)
 const DEFAULT_LOCATIONS = ["Bogota", "Cedarhurst", "Toms River", "Teaneck Store", "Office", "Warehouse"];
 
-// Allocation rounding priority
-const FILL_PRIORITY = ["Bogota", "Cedarhurst", "Toms River", "Teaneck Store", "Warehouse"];
+const PACK_WITH_XXS = { XXS: 1, XS: 3, S: 3, M: 2, L: 1, XL: 1 }; // 11
+const PACK_NO_XXS = { XS: 3, S: 3, M: 2, L: 1, XL: 1 }; // 10
 
-// Allocation Guide S26 scales (from your uploaded guide)
-// These templates are XS–XL. XXS will be allocated using the same ratios as XS.
-const ALLOC_TEMPLATES = {
-  60: {
-    Bogota: { XS: 6, S: 6, M: 4, L: 2, XL: 2 },
-    Cedarhurst: { XS: 6, S: 6, M: 4, L: 2, XL: 2 },
-    "Toms River": { XS: 3, S: 3, M: 2, L: 1, XL: 1 },
-    "Teaneck Store": { XS: 3, S: 3, M: 2, L: 1, XL: 1 },
-    Warehouse: { XS: 0, S: 0, M: 0, L: 0, XL: 0 }
-  },
-  70: {
-    Bogota: { XS: 6, S: 6, M: 4, L: 2, XL: 2 },
-    Cedarhurst: { XS: 9, S: 9, M: 6, L: 3, XL: 3 },
-    "Toms River": { XS: 3, S: 3, M: 2, L: 1, XL: 1 },
-    "Teaneck Store": { XS: 3, S: 3, M: 2, L: 1, XL: 1 },
-    Warehouse: { XS: 0, S: 0, M: 0, L: 0, XL: 0 }
-  },
-  80: {
-    Bogota: { XS: 6, S: 6, M: 4, L: 2, XL: 2 },
-    Cedarhurst: { XS: 9, S: 9, M: 6, L: 3, XL: 3 },
-    "Toms River": { XS: 6, S: 6, M: 4, L: 2, XL: 2 },
-    "Teaneck Store": { XS: 3, S: 3, M: 2, L: 1, XL: 1 },
-    Warehouse: { XS: 0, S: 0, M: 0, L: 0, XL: 0 }
-  },
-  90: {
-    Bogota: { XS: 9, S: 9, M: 6, L: 3, XL: 3 },
-    Cedarhurst: { XS: 9, S: 9, M: 6, L: 3, XL: 3 },
-    "Toms River": { XS: 6, S: 6, M: 4, L: 2, XL: 2 },
-    "Teaneck Store": { XS: 3, S: 3, M: 2, L: 1, XL: 1 },
-    Warehouse: { XS: 0, S: 0, M: 0, L: 0, XL: 0 }
-  },
-  100: {
-    Bogota: { XS: 9, S: 9, M: 6, L: 3, XL: 3 },
-    Cedarhurst: { XS: 12, S: 12, M: 8, L: 4, XL: 4 },
-    "Toms River": { XS: 6, S: 6, M: 4, L: 2, XL: 2 },
-    "Teaneck Store": { XS: 3, S: 3, M: 2, L: 1, XL: 1 },
-    Warehouse: { XS: 0, S: 0, M: 0, L: 0, XL: 0 }
-  },
-  120: {
-    Bogota: { XS: 9, S: 9, M: 6, L: 3, XL: 3 },
-    Cedarhurst: { XS: 12, S: 12, M: 8, L: 4, XL: 4 },
-    "Toms River": { XS: 6, S: 6, M: 4, L: 2, XL: 2 },
-    "Teaneck Store": { XS: 3, S: 3, M: 2, L: 1, XL: 1 },
-    Warehouse: { XS: 6, S: 6, M: 4, L: 2, XL: 2 }
-  },
-  130: {
-    Bogota: { XS: 9, S: 9, M: 6, L: 3, XL: 3 },
-    Cedarhurst: { XS: 15, S: 15, M: 10, L: 5, XL: 5 },
-    "Toms River": { XS: 6, S: 6, M: 4, L: 2, XL: 2 },
-    "Teaneck Store": { XS: 3, S: 3, M: 2, L: 1, XL: 1 },
-    Warehouse: { XS: 6, S: 6, M: 4, L: 2, XL: 2 }
-  },
-  140: {
-    Bogota: { XS: 12, S: 12, M: 8, L: 4, XL: 4 },
-    Cedarhurst: { XS: 15, S: 15, M: 10, L: 5, XL: 5 },
-    "Toms River": { XS: 6, S: 6, M: 4, L: 2, XL: 2 },
-    "Teaneck Store": { XS: 3, S: 3, M: 2, L: 1, XL: 1 },
-    Warehouse: { XS: 6, S: 6, M: 4, L: 2, XL: 2 }
-  },
-  170: {
-    Bogota: { XS: 12, S: 12, M: 8, L: 4, XL: 4 },
-    Cedarhurst: { XS: 18, S: 18, M: 12, L: 6, XL: 6 },
-    "Toms River": { XS: 9, S: 9, M: 6, L: 3, XL: 3 },
-    "Teaneck Store": { XS: 6, S: 6, M: 4, L: 2, XL: 2 },
-    Warehouse: { XS: 9, S: 9, M: 6, L: 3, XL: 3 }
-  },
-  200: {
-    Bogota: { XS: 15, S: 15, M: 10, L: 5, XL: 5 },
-    Cedarhurst: { XS: 24, S: 24, M: 16, L: 8, XL: 8 },
-    "Toms River": { XS: 12, S: 12, M: 8, L: 4, XL: 4 },
-    "Teaneck Store": { XS: 9, S: 9, M: 6, L: 3, XL: 3 },
-    Warehouse: { XS: 12, S: 12, M: 8, L: 4, XL: 4 }
-  },
-  220: {
-    Bogota: { XS: 18, S: 18, M: 12, L: 6, XL: 6 },
-    Cedarhurst: { XS: 24, S: 24, M: 16, L: 8, XL: 8 },
-    "Toms River": { XS: 12, S: 12, M: 8, L: 4, XL: 4 },
-    "Teaneck Store": { XS: 9, S: 9, M: 6, L: 3, XL: 3 },
-    Warehouse: { XS: 12, S: 12, M: 8, L: 4, XL: 4 }
-  }
-};
+// You can tweak priority if sizes are too tight to fulfill all planned packs
+const STORE_PACK_PRIORITY = ["Cedarhurst", "Bogota", "Toms River", "Teaneck Store"];
+
+// Pack plan “shape”. These are examples and can be tuned.
+// Key is buy total (after office XS removed is effectively handled automatically).
+const PACK_PLAN_NO_XXS = [
+  { minTotal: 140, packs: { Bogota: 3, Cedarhurst: 4, "Toms River": 2, "Teaneck Store": 1 } }, // 100 allocated via packs, leftover->WH
+  { minTotal: 120, packs: { Bogota: 3, Cedarhurst: 4, "Toms River": 2, "Teaneck Store": 1 } }, // still decent store fill
+  { minTotal: 100, packs: { Bogota: 2, Cedarhurst: 4, "Toms River": 2, "Teaneck Store": 1 } }, // 90 via packs, leftover->WH
+  { minTotal: 80, packs: { Bogota: 2, Cedarhurst: 3, "Toms River": 1, "Teaneck Store": 2 } }, // your example: 80 exactly
+  { minTotal: 60, packs: { Bogota: 2, Cedarhurst: 2, "Toms River": 1, "Teaneck Store": 1 } }
+];
+
+const PACK_PLAN_WITH_XXS = [
+  { minTotal: 154, packs: { Bogota: 3, Cedarhurst: 4, "Toms River": 2, "Teaneck Store": 1 } }, // 10 packs * 11 = 110, leftover->WH
+  { minTotal: 88, packs: { Bogota: 2, Cedarhurst: 3, "Toms River": 1, "Teaneck Store": 2 } }, // 8 packs * 11 = 88
+  { minTotal: 66, packs: { Bogota: 2, Cedarhurst: 2, "Toms River": 1, "Teaneck Store": 1 } } // 6 packs * 11 = 66
+];
 
 function clampInt(v) {
   if (v === "" || v === null || v === undefined) return 0;
@@ -189,117 +124,43 @@ function sumPerSize(obj, sizes) {
   return sizes.reduce((a, s) => a + Number(obj?.[s] ?? 0), 0);
 }
 
-function pickBestTemplateKeyForTotal(total, buildAllocForKey) {
-  const keys = Object.keys(ALLOC_TEMPLATES)
-    .map((x) => Number(x))
-    .sort((a, b) => b - a); // descending
-
-  const candidates = keys.filter((k) => k <= total);
-  const fallback = keys;
-
-  const toTry = candidates.length ? candidates : fallback;
-
-  for (const k of toTry) {
-    const testAlloc = buildAllocForKey(k);
-    if (!testAlloc) continue;
-    const trDrop = testAlloc._drop?.["Toms River"];
-    const tnDrop = testAlloc._drop?.["Teaneck Store"];
-    if (!trDrop && !tnDrop) return k;
+/**
+ * Try to build N full packs from available inventoryBySize.
+ * Returns { builtPacks, usedBySize }.
+ */
+function computeMaxPacksAvailable(inventoryBySize, packScale) {
+  let max = Infinity;
+  for (const [size, need] of Object.entries(packScale)) {
+    const have = Number(inventoryBySize?.[size] ?? 0);
+    if (need <= 0) continue;
+    max = Math.min(max, Math.floor(have / need));
   }
-
-  let bestKey = toTry[0];
-  let bestScore = Infinity;
-
-  for (const k of toTry) {
-    const testAlloc = buildAllocForKey(k);
-    if (!testAlloc) continue;
-    const score = (testAlloc._drop?.["Toms River"] ? 1 : 0) + (testAlloc._drop?.["Teaneck Store"] ? 1 : 0);
-    if (score < bestScore) {
-      bestScore = score;
-      bestKey = k;
-    }
-  }
-
-  return bestKey;
+  if (!Number.isFinite(max)) max = 0;
+  return Math.max(0, max);
 }
 
-function computeRatiosFromTemplate(templateForKey, size) {
-  const ratios = {};
-  let colTotal = 0;
-  for (const loc of Object.keys(templateForKey)) {
-    const v = Number(templateForKey[loc]?.[size] ?? 0);
-    colTotal += v;
+function subtractPack(inventoryBySize, packScale, packsCount = 1) {
+  const next = { ...inventoryBySize };
+  for (const [size, need] of Object.entries(packScale)) {
+    next[size] = Math.max(0, Number(next[size] ?? 0) - need * packsCount);
   }
-  for (const loc of Object.keys(templateForKey)) {
-    const v = Number(templateForKey[loc]?.[size] ?? 0);
-    ratios[loc] = colTotal > 0 ? v / colTotal : 0;
-  }
-  return ratios;
+  return next;
 }
 
-function apportionInteger(total, ratios, priorityOrder) {
-  const locs = Object.keys(ratios);
-  const raw = {};
-  const base = {};
-  const frac = {};
-
-  let used = 0;
-  for (const loc of locs) {
-    raw[loc] = total * (ratios[loc] || 0);
-    base[loc] = Math.floor(raw[loc]);
-    frac[loc] = raw[loc] - base[loc];
-    used += base[loc];
-  }
-
-  let remaining = total - used;
-  if (remaining <= 0) return base;
-
-  const prIndex = new Map(priorityOrder.map((l, i) => [l, i]));
-  const ordered = [...locs].sort((a, b) => {
-    const df = (frac[b] ?? 0) - (frac[a] ?? 0);
-    if (df !== 0) return df;
-    return (prIndex.get(a) ?? 999) - (prIndex.get(b) ?? 999);
-  });
-
-  let idx = 0;
-  while (remaining > 0) {
-    const loc = ordered[idx % ordered.length];
-    base[loc] += 1;
-    remaining -= 1;
-    idx += 1;
-  }
-
-  return base;
-}
-
-function missingFullSizesCount(storeRow, shippedTotalsBySize, sizes) {
-  let missing = 0;
-  for (const s of sizes) {
-    const shipQty = Number(shippedTotalsBySize?.[s] ?? 0);
-    if (shipQty <= 0) continue;
-
-    const got = Number(storeRow?.[s] ?? 0);
-    if (got <= 0) missing += 1;
-  }
-  return missing;
-}
-
-function shouldDropStore(storeRow, shippedTotalsBySize, sizes) {
-  const rowTotal = sizes.reduce((a, s) => a + Number(storeRow?.[s] ?? 0), 0);
-  if (rowTotal <= 0) return false;
-
-  const missing = missingFullSizesCount(storeRow, shippedTotalsBySize, sizes);
-
-  return rowTotal < 7 || missing >= 2;
-}
-
-function moveRowToSink(matrix, fromLoc, sinkLoc, sizes) {
+function addPackToMatrix(matrix, loc, packScale, packsCount = 1) {
   const out = structuredClone(matrix);
-  for (const s of sizes) {
-    out[sinkLoc][s] = Number(out[sinkLoc][s] ?? 0) + Number(out[fromLoc][s] ?? 0);
-    out[fromLoc][s] = 0;
+  for (const [size, need] of Object.entries(packScale)) {
+    out[loc][size] = Number(out?.[loc]?.[size] ?? 0) + need * packsCount;
   }
   return out;
+}
+
+function pickPlan(total, hasXXS) {
+  const plans = hasXXS ? PACK_PLAN_WITH_XXS : PACK_PLAN_NO_XXS;
+  for (const p of plans) {
+    if (total >= p.minTotal) return p.packs;
+  }
+  return plans[plans.length - 1]?.packs || {};
 }
 
 export default function App() {
@@ -376,8 +237,6 @@ export default function App() {
   // Allocation (Mode 2)
   const [alloc, setAlloc] = useState(() => emptyMatrix(DEFAULT_LOCATIONS, SIZES));
   const [allocEdit, setAllocEdit] = useState(false);
-
-  // ✅ NEW: Ignore Teaneck toggle
   const [ignoreTeaneck, setIgnoreTeaneck] = useState(false);
 
   // Receiving (Mode 3)
@@ -393,6 +252,11 @@ export default function App() {
   const [shopifyProduct, setShopifyProduct] = useState(null);
   const [barcodeLinkInput, setBarcodeLinkInput] = useState("");
   const [barcodeMap, setBarcodeMap] = useState({});
+
+  // ✅ NEW: Shopify manual search + select
+  const [shopifySearch, setShopifySearch] = useState("");
+  const [shopifySearchResults, setShopifySearchResults] = useState([]);
+  const [shopifySelectedProductId, setShopifySelectedProductId] = useState("");
 
   // Derived
   const unitCost = Number(selected?.unitCost ?? 0);
@@ -506,10 +370,16 @@ export default function App() {
 
     setAllocEdit(false);
     setScanEdit(false);
+
+    // reset shopify/manual search state on product switch
     setShopifyLinked(false);
     setShopifyProduct(null);
     setBarcodeLinkInput("");
     setBarcodeMap({});
+    setShopifySearch("");
+    setShopifySearchResults([]);
+    setShopifySelectedProductId("");
+
     setScanBarcode("");
     setLastScanStack([]);
 
@@ -565,109 +435,130 @@ export default function App() {
     }
   }
 
-  // ---------- Mode 2: Auto Allocate ----------
+  // ---------- Mode 2: Auto Allocate (pack-based, BUY-based) ----------
   function onAutoAllocate() {
-    const shipOriginal = { ...shipTotalsBySize };
+    if (!selected) return;
 
-    const buildAllocForKey = (templateKey) => {
-      const template = ALLOC_TEMPLATES[templateKey];
-      if (!template) return null;
+    const nextAlloc = emptyMatrix(locations, sizes);
 
-      const ship = { ...shipOriginal };
-      const nextAlloc = emptyMatrix(locations, sizes);
+    // Base is BUY totals
+    let buy = {};
+    for (const s of sizes) buy[s] = Number(selected?.buy?.[s] ?? 0);
 
-      // 1) Always 1 XS to Office (if possible)
-      if (ship.XS >= 1 && locations.includes("Office")) {
-        nextAlloc["Office"]["XS"] = 1;
-        ship.XS -= 1;
-      }
-
-      // Only allocate across these template locations (skip Office)
-      let templateLocs = Object.keys(template).filter((l) => locations.includes(l));
-
-      // ✅ NEW: if ignoreTeaneck, remove Teaneck from auto allocation
-      if (ignoreTeaneck) {
-        templateLocs = templateLocs.filter((l) => l !== "Teaneck Store");
-      }
-
-      const priority = FILL_PRIORITY.filter((l) => templateLocs.includes(l));
-
-      for (const size of sizes) {
-        const qty = Number(ship?.[size] ?? 0);
-        if (!qty) continue;
-
-        // XXS follows XS ratios
-        let ratioSize = size === "XXS" ? "XS" : size;
-        if (!["XS", "S", "M", "L", "XL"].includes(ratioSize)) ratioSize = "XS";
-
-        const ratiosAll = computeRatiosFromTemplate(template, ratioSize);
-        const ratios = {};
-        for (const loc of templateLocs) ratios[loc] = ratiosAll[loc] || 0;
-
-        const apportioned = apportionInteger(qty, ratios, priority);
-
-        for (const loc of templateLocs) {
-          nextAlloc[loc][size] = Number(nextAlloc[loc][size] ?? 0) + Number(apportioned[loc] ?? 0);
-        }
-      }
-
-      // Evaluate drop-worthiness (but DON'T move units yet in the evaluator)
-      const dropMap = {};
-      for (const loc of ["Toms River", "Teaneck Store"]) {
-        if (!locations.includes(loc)) continue;
-
-        // ✅ NEW: when ignoring Teaneck, do NOT score it for dropping
-        if (ignoreTeaneck && loc === "Teaneck Store") {
-          dropMap[loc] = false;
-          continue;
-        }
-
-        dropMap[loc] = shouldDropStore(nextAlloc[loc], shipOriginal, sizes);
-      }
-
-      nextAlloc._drop = dropMap;
-      return nextAlloc;
-    };
-
-    // 2) Choose best template key with "scale down" behavior if needed
-    const remainingTotal = sizes.reduce((a, s) => a + Number(shipOriginal?.[s] ?? 0), 0);
-    const templateKey = pickBestTemplateKeyForTotal(remainingTotal, buildAllocForKey);
-
-    let built = buildAllocForKey(templateKey);
-    if (!built) {
-      setStatus("Auto Allocate failed: no templates available.");
-      return;
+    // Overage = ship - buy goes to Warehouse
+    const ship = { ...shipTotalsBySize };
+    const overage = {};
+    for (const s of sizes) {
+      const diff = Number(ship?.[s] ?? 0) - Number(buy?.[s] ?? 0);
+      overage[s] = diff > 0 ? diff : 0;
     }
 
-    delete built._drop;
+    // Office: 1 XS first (from BUY)
+    if (locations.includes("Office") && (buy.XS ?? 0) >= 1) {
+      nextAlloc["Office"]["XS"] = 1;
+      buy.XS -= 1;
+    }
 
-    // 3) Apply final drop rules (move units to sink)
-    const warehouseHasAny = sizes.reduce((a, s) => a + Number(built?.["Warehouse"]?.[s] ?? 0), 0) > 0;
+    const hasXXS = Number(buy.XXS ?? 0) > 0;
+    const packScale = hasXXS ? PACK_WITH_XXS : PACK_NO_XXS;
 
-    let sink = null;
-    if (warehouseHasAny && locations.includes("Warehouse")) sink = "Warehouse";
-    else if (locations.includes("Cedarhurst")) sink = "Cedarhurst";
-    else if (locations.includes("Bogota")) sink = "Bogota";
-    else sink = locations[0];
+    // Pick store pack plan based on BUY total (after office)
+    const remainingTotal = sizes.reduce((a, s) => a + Number(buy?.[s] ?? 0), 0);
+    let plan = pickPlan(remainingTotal, hasXXS);
 
-    // ✅ NEW: if ignoring Teaneck, only consider dropping Toms River
-    const dropCandidates = ignoreTeaneck ? ["Toms River"] : ["Toms River", "Teaneck Store"];
+    // If ignoreTeaneck, remove it from plan
+    if (ignoreTeaneck) {
+      const { ["Teaneck Store"]: _t, ...rest } = plan;
+      plan = rest;
+    }
 
-    for (const loc of dropCandidates) {
-      if (!locations.includes(loc)) continue;
-      if (shouldDropStore(built[loc], shipOriginal, sizes)) {
-        built = moveRowToSink(built, loc, sink, sizes);
+    // Allocate packs to stores, but limited by size availability
+    let inv = { ...buy };
+
+    // If no XXS mode, make sure XXS stays untouched (it'll go to Warehouse)
+    // (Pack scale doesn’t use XXS in that case.)
+    const stores = Object.keys(plan || {});
+
+    // Determine max packs we can make
+    const maxPossiblePacks = computeMaxPacksAvailable(inv, packScale);
+
+    // Desired packs per store from plan
+    const desiredPacks = { ...plan };
+
+    // Sum desired
+    let desiredTotal = 0;
+    for (const s of stores) desiredTotal += Number(desiredPacks[s] ?? 0);
+
+    // If we can’t fulfill all desired packs, scale down by priority
+    // Allocate in priority order one pack at a time while inventory allows.
+    const priority = STORE_PACK_PRIORITY.filter((s) => stores.includes(s));
+    const packsGiven = Object.fromEntries(stores.map((s) => [s, 0]));
+
+    let packsLeftWeCanBuild = maxPossiblePacks;
+
+    // Greedy distribution: give each store up to desired count, in priority order cycling.
+    // This keeps “shape” while respecting size constraints.
+    while (packsLeftWeCanBuild > 0) {
+      let gaveAny = false;
+
+      for (const store of priority) {
+        if (packsLeftWeCanBuild <= 0) break;
+        const want = Number(desiredPacks[store] ?? 0);
+        if (packsGiven[store] >= want) continue;
+
+        // check if we can still build 1 more pack
+        const canBuild = computeMaxPacksAvailable(inv, packScale);
+        if (canBuild <= 0) {
+          packsLeftWeCanBuild = 0;
+          break;
+        }
+
+        // give 1 pack
+        packsGiven[store] += 1;
+        inv = subtractPack(inv, packScale, 1);
+        gaveAny = true;
+        packsLeftWeCanBuild -= 1;
+      }
+
+      if (!gaveAny) break;
+    }
+
+    // Apply packs to allocation matrix
+    let built = nextAlloc;
+    for (const store of stores) {
+      const count = Number(packsGiven[store] ?? 0);
+      if (count <= 0) continue;
+      built = addPackToMatrix(built, store, packScale, count);
+    }
+
+    // Leftover BUY inventory goes to Warehouse
+    if (locations.includes("Warehouse")) {
+      for (const s of sizes) {
+        built["Warehouse"][s] = Number(built["Warehouse"][s] ?? 0) + Number(inv[s] ?? 0);
+      }
+    } else {
+      // if Warehouse missing for some reason, dump into first location
+      const sink = locations[0];
+      for (const s of sizes) {
+        built[sink][s] = Number(built[sink][s] ?? 0) + Number(inv[s] ?? 0);
       }
     }
 
-    // ✅ NEW: Force Teaneck to 0 if ignored (makes the behavior unmistakable)
+    // Add SHIP overage to Warehouse as well
+    if (locations.includes("Warehouse")) {
+      for (const s of sizes) {
+        built["Warehouse"][s] = Number(built["Warehouse"][s] ?? 0) + Number(overage[s] ?? 0);
+      }
+    }
+
+    // Force Teaneck row to 0 if ignored (visual + prevents accidental carry)
     if (ignoreTeaneck && locations.includes("Teaneck Store")) {
       for (const s of sizes) built["Teaneck Store"][s] = 0;
     }
 
     setAlloc(built);
     setStatus(
-      `Auto Allocated ✅ (scale ${templateKey}) — Ignore Teaneck ${ignoreTeaneck ? "ON" : "OFF"} — drop rule: <7 units OR missing 2+ sizes; Office XS rule applied`
+      `Auto Allocated ✅ Packs (${hasXXS ? "11" : "10"}) based on BUY; Overage→Warehouse; Ignore Teaneck ${ignoreTeaneck ? "ON" : "OFF"}`
     );
   }
 
@@ -697,7 +588,7 @@ export default function App() {
     }
   }
 
-  // ---------- Mode 2: Link Shopify product and write GID to Airtable ----------
+  // ---------- Shopify: Link by barcode ----------
   async function onLinkShopifyAndPersist() {
     const bc = barcodeLinkInput.trim();
     if (!bc || !selectedId) return;
@@ -730,6 +621,60 @@ export default function App() {
       setTimeout(() => scanInputRef.current?.focus(), 50);
     } catch (e) {
       setStatus(`Link failed: ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // ✅ NEW: Shopify search and manual select
+  async function onShopifySearch() {
+    const q = shopifySearch.trim();
+    if (!q) return;
+    try {
+      setLoading(true);
+      setStatus("Searching Shopify products…");
+      const r = await shopifySearchByTitle(q);
+      const products = r.products || [];
+      setShopifySearchResults(products);
+      setShopifySelectedProductId(products[0]?.productId || "");
+      setStatus(products.length ? `Found ${products.length} products ✅` : "No products found.");
+    } catch (e) {
+      setShopifySearchResults([]);
+      setShopifySelectedProductId("");
+      setStatus(`Search failed: ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function onLinkSelectedShopifyProduct() {
+    if (!selectedId) return;
+    const productId = String(shopifySelectedProductId || "").trim();
+    if (!productId) return;
+
+    try {
+      setLoading(true);
+      setStatus("Linking selected Shopify product…");
+
+      // Fetch variants so scanning works immediately
+      const r = await shopifyByProductId(productId);
+
+      setStatus("Writing Shopify Product GID to Airtable…");
+      await linkShopifyProduct(selectedId, productId);
+
+      setShopifyLinked(true);
+      setShopifyProduct(r.product);
+      setBarcodeMap(buildBarcodeMapFromProduct(r.product));
+      setStatus(`Linked + saved ✅ ${r.product.title}`);
+
+      if (poData?.po) {
+        const refreshed = await fetchPO(poData.po);
+        setPoData(refreshed);
+      }
+
+      setTimeout(() => scanInputRef.current?.focus(), 50);
+    } catch (e) {
+      setStatus(`Manual link failed: ${e.message}`);
     } finally {
       setLoading(false);
     }
@@ -975,6 +920,7 @@ export default function App() {
                   </div>
                 )}
 
+                {/* Shopify link is in Mode 2 + Mode 3 */}
                 {selected && (mode === "allocation" || mode === "receiving") ? (
                   <>
                     <div className="divider" />
@@ -992,6 +938,7 @@ export default function App() {
                         </div>
                       ) : (
                         <>
+                          {/* Barcode link */}
                           <div className="hstack">
                             <input
                               className="input"
@@ -1009,10 +956,59 @@ export default function App() {
                               disabled={!selected || loading || !barcodeLinkInput.trim()}
                               type="button"
                             >
-                              Link
+                              Link by Barcode
                             </button>
                           </div>
-                          <div className="hint">This writes the Shopify Product GID to Airtable so it auto-loads next time.</div>
+
+                          <div className="divider" />
+
+                          {/* ✅ NEW: Title search + select */}
+                          <div className="hstack">
+                            <input
+                              className="input"
+                              value={shopifySearch}
+                              onChange={(e) => setShopifySearch(e.target.value)}
+                              onKeyDown={(e) => {
+                                if (e.key === "Enter") onShopifySearch();
+                              }}
+                              placeholder="Or search Shopify by product title…"
+                              disabled={!selected}
+                            />
+                            <button className="btn" onClick={onShopifySearch} disabled={loading || !shopifySearch.trim()} type="button">
+                              Search
+                            </button>
+                          </div>
+
+                          {shopifySearchResults.length ? (
+                            <div style={{ marginTop: 10 }}>
+                              <select
+                                className="select"
+                                value={shopifySelectedProductId}
+                                onChange={(e) => setShopifySelectedProductId(e.target.value)}
+                              >
+                                {shopifySearchResults.map((p) => (
+                                  <option key={p.productId} value={p.productId}>
+                                    {p.title}
+                                  </option>
+                                ))}
+                              </select>
+
+                              <div style={{ marginTop: 8 }}>
+                                <button
+                                  className="btn"
+                                  onClick={onLinkSelectedShopifyProduct}
+                                  disabled={loading || !shopifySelectedProductId}
+                                  type="button"
+                                >
+                                  Link Selected Product
+                                </button>
+                              </div>
+                            </div>
+                          ) : null}
+
+                          <div className="hint" style={{ marginTop: 8 }}>
+                            Barcode is fastest. Search is for when barcode isn’t available.
+                          </div>
                         </>
                       )}
                     </div>
@@ -1120,9 +1116,7 @@ export default function App() {
                 {mode === "allocation" ? (
                   <>
                     <div className="sectionTitle">Mode 2 — Allocation</div>
-                    <div className="hint">
-                      Sizes are columns. Locations are rows. Use Auto Allocate first, then do minimal manual edits.
-                    </div>
+                    <div className="hint">Auto Allocate uses BUY-based packs; overage Ship→Warehouse.</div>
 
                     <BuyShipTotalsRow sizes={sizes} buyTotals={buyTotalsBySize} shipTotals={shipTotalsBySize} />
 
@@ -1134,7 +1128,6 @@ export default function App() {
                         {allocEdit ? "Done Editing" : "Edit Allocation"}
                       </button>
 
-                      {/* ✅ NEW: Ignore Teaneck checkbox */}
                       <label style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: 10 }}>
                         <input
                           type="checkbox"
