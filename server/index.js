@@ -9,7 +9,7 @@ import {
   lookupVariantByBarcode,
   fetchProductVariants,
   adjustInventoryQuantities,
-  searchProductsByTitle
+  searchProductsByTitle // NEW
 } from "./shopify.js";
 import { buildCloseoutPdf } from "./pdf.js";
 
@@ -209,7 +209,7 @@ app.get("/api/shopify/barcode/:barcode", requireAuth, async (req, res) => {
   }
 });
 
-// ---- Shopify product fetch by productId ----
+// ---- NEW: Shopify product fetch by productId ----
 app.get("/api/shopify/product/:productId", requireAuth, async (req, res) => {
   try {
     const productId = (req.params.productId || "").trim();
@@ -229,7 +229,7 @@ app.get("/api/shopify/product/:productId", requireAuth, async (req, res) => {
   }
 });
 
-// ---- Shopify search by title ----
+// NEW: search Shopify products by title
 app.get("/api/shopify/search", requireAuth, async (req, res) => {
   try {
     const title = String(req.query?.title || "").trim();
@@ -242,7 +242,7 @@ app.get("/api/shopify/search", requireAuth, async (req, res) => {
   }
 });
 
-// ---- Link Airtable record to Shopify product (writes Product GID into Airtable) ----
+// ---- NEW: Link Airtable record to Shopify product (writes Product GID into Airtable) ----
 app.patch("/api/record/:id/link-shopify-product", requireAuth, async (req, res) => {
   try {
     const id = req.params.id;
@@ -370,6 +370,8 @@ app.get("/api/shopify/debug-locations", requireAuth, async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
+
+app.use(express.static(clientDist));
 
 // ---- Static client ----
 app.use(express.static(clientDist));
