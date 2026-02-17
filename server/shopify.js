@@ -218,3 +218,33 @@ export async function adjustInventoryQuantities({
 
   return { ok: true, status, debug: { results } };
 }
+export async function searchProductsByTitle(title, first = 10) {
+  const q = `
+    query ($q: String!, $first: Int!) {
+      products(first: $first, query: $q) {
+        edges {
+          node {
+            id
+            title
+          }
+        }
+      }
+    }
+  `;
+
+  const queryString = `title:*${title}*`;
+
+  const { ok, json } = await shopifyGraphQL(q, {
+    q: queryString,
+    first
+  });
+
+  if (!ok || json.errors) {
+    throw new Error("Shopify search failed");
+  }
+
+  return json.data.products.edges.map((e) => ({
+    productId: e.node.id,
+    title: e.node.title
+  }));
+}
