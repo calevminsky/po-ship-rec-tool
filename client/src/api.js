@@ -100,12 +100,3 @@ export async function closeoutPdf(payload) {
   const blob = await res.blob();
   return blob;
 }
-
-export async function shopifySearchByTitle(title) {
-  const res = await fetch(
-    `/api/shopify/search?title=${encodeURIComponent(title)}`
-  );
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.error || "Search failed");
-  return data;
-}
