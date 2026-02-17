@@ -9,7 +9,7 @@ import {
   lookupVariantByBarcode,
   fetchProductVariants,
   adjustInventoryQuantities,
-  searchProductsByTitle // NEW
+  searchProductsByTitle
 } from "./shopify.js";
 import { buildCloseoutPdf } from "./pdf.js";
 
@@ -78,14 +78,12 @@ app.post("/api/logout", (req, res) => {
 });
 
 // -------------------- SHOPIFY OAUTH --------------------
-// Start OAuth (you can keep this, even if you eventually move to a fixed token)
 app.get("/api/shopify/auth", requireAuth, (req, res) => {
   OAUTH_STATE = makeState();
   const url = buildAuthorizeUrl(OAUTH_STATE);
   res.redirect(url);
 });
 
-// OAuth callback
 app.get("/api/shopify/callback", requireAuth, async (req, res) => {
   try {
     const { code, state } = req.query;
@@ -95,14 +93,12 @@ app.get("/api/shopify/callback", requireAuth, async (req, res) => {
     const token = await exchangeCodeForToken(code);
     setShopifyAccessToken(token);
 
-    // back to app
     res.redirect("/?shopify=connected");
   } catch (e) {
     res.status(500).send(`Shopify auth failed: ${e.message}`);
   }
 });
 
-// Token status
 app.get("/api/shopify/status", requireAuth, (req, res) => {
   res.json({ ok: true, hasToken: hasShopifyAccessToken() });
 });
@@ -209,7 +205,7 @@ app.get("/api/shopify/barcode/:barcode", requireAuth, async (req, res) => {
   }
 });
 
-// ---- NEW: Shopify product fetch by productId ----
+// ---- Shopify product fetch by productId ----
 app.get("/api/shopify/product/:productId", requireAuth, async (req, res) => {
   try {
     const productId = (req.params.productId || "").trim();
@@ -229,7 +225,7 @@ app.get("/api/shopify/product/:productId", requireAuth, async (req, res) => {
   }
 });
 
-// NEW: search Shopify products by title
+// ---- Shopify search by title ----
 app.get("/api/shopify/search", requireAuth, async (req, res) => {
   try {
     const title = String(req.query?.title || "").trim();
@@ -242,7 +238,7 @@ app.get("/api/shopify/search", requireAuth, async (req, res) => {
   }
 });
 
-// ---- NEW: Link Airtable record to Shopify product (writes Product GID into Airtable) ----
+// ---- Link Airtable record to Shopify product ----
 app.patch("/api/record/:id/link-shopify-product", requireAuth, async (req, res) => {
   try {
     const id = req.params.id;
@@ -263,19 +259,16 @@ app.post("/api/closeout", requireAuth, async (req, res) => {
     const { po, productLabel, recordId, sizes, locations, allocation, scanned, shopifyProduct } = req.body || {};
     if (!recordId) return res.status(400).json({ error: "Missing recordId" });
 
-    // Rec totals per size from scanned matrix
     const recTotals = {};
     for (const s of sizes || []) {
       recTotals[s] = (locations || []).reduce((a, loc) => a + Number(scanned?.[loc]?.[s] ?? 0), 0);
     }
 
-    // Save scan + totals to Airtable
     await updateRecord(recordId, {
       [AIRTABLE_FIELDS.SCAN_FIELD]: JSON.stringify(scanned),
       ...Object.fromEntries(getSizes().map((s) => [`Rec_${s}`, Number(recTotals[s] ?? 0)]))
     });
 
-    // Shopify adjustments (optional)
     let shopifyResult = { skipped: true };
     if (shopifyProduct?.productId && Array.isArray(shopifyProduct?.variants)) {
       const sizeToInv = new Map();
@@ -314,7 +307,6 @@ app.post("/api/closeout", requireAuth, async (req, res) => {
       }
     }
 
-    // PDF
     const createdAtISO = new Date().toISOString();
     const pdfBuffer = await buildCloseoutPdf({
       username,
@@ -371,25 +363,9 @@ app.get("/api/shopify/debug-locations", requireAuth, async (req, res) => {
   }
 });
 
-app.use(express.static(clientDist));
-
 // ---- Static client ----
 app.use(express.static(clientDist));
 app.get("*", (req, res) => res.sendFile(path.join(clientDist, "index.html")));
 
 const port = process.env.PORT || 10000;
 app.listen(port, () => console.log(`Server running on :${port}`));
-
-app.get("/api/shopify/search", requireAuth, async (req, res) => {
-  try {
-    const title = String(req.query.title || "").trim();
-    if (!title)
-      return res.status(400).json({ error: "Missing title" });
-
-    const products = await searchProductsByTitle(title, 10);
-    res.json({ ok: true, products });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-});
-
