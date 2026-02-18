@@ -9,8 +9,9 @@ import {
   lookupVariantByBarcode,
   fetchProductVariants,
   adjustInventoryQuantities,
-  searchProductsByTitle // NEW
+  searchProductsByTitle
 } from "./shopify.js";
+
 import { buildCloseoutPdf, buildAllocationPdf } from "./pdf.js";
 
 import { buildAuthorizeUrl, exchangeCodeForToken, makeState } from "./shopifyAuth.js";
@@ -26,7 +27,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const clientDist = path.join(__dirname, "public");
 
-// ---- APP_USERS auth (Option 2) ----
+// ---- APP_USERS auth ----
 const USERS_RAW = process.env.APP_USERS || "";
 const USERS = new Map(
   USERS_RAW
@@ -63,12 +64,18 @@ app.get("/api/me", (req, res) => {
 
 app.post("/api/login", (req, res) => {
   if (!AUTH_ENABLED) return res.json({ ok: true, user: { username: "guest" }, authEnabled: false });
+
   const { username, password } = req.body || {};
   const expected = USERS.get(String(username || ""));
   if (!expected || expected !== String(password || "")) return res.status(401).json({ error: "Invalid credentials" });
 
-  // NOTE: secure:true requires HTTPS (Render is HTTPS, so OK)
-  res.cookie("yb_user", String(username), { httpOnly: true, sameSite: "strict", secure: true });
+  // secure cookie should be production-only, otherwise local dev on http breaks
+  res.cookie("yb_user", String(username), {
+    httpOnly: true,
+    sameSite: "strict",
+    secure: process.env.NODE_ENV === "production"
+  });
+
   res.json({ ok: true, user: { username }, authEnabled: true });
 });
 
@@ -78,14 +85,12 @@ app.post("/api/logout", (req, res) => {
 });
 
 // -------------------- SHOPIFY OAUTH --------------------
-// Start OAuth (you can keep this, even if you eventually move to a fixed token)
 app.get("/api/shopify/auth", requireAuth, (req, res) => {
   OAUTH_STATE = makeState();
   const url = buildAuthorizeUrl(OAUTH_STATE);
   res.redirect(url);
 });
 
-// OAuth callback
 app.get("/api/shopify/callback", requireAuth, async (req, res) => {
   try {
     const { code, state } = req.query;
@@ -95,14 +100,12 @@ app.get("/api/shopify/callback", requireAuth, async (req, res) => {
     const token = await exchangeCodeForToken(code);
     setShopifyAccessToken(token);
 
-    // back to app
     res.redirect("/?shopify=connected");
   } catch (e) {
     res.status(500).send(`Shopify auth failed: ${e.message}`);
   }
 });
 
-// Token status
 app.get("/api/shopify/status", requireAuth, (req, res) => {
   res.json({ ok: true, hasToken: hasShopifyAccessToken() });
 });
@@ -184,7 +187,7 @@ app.patch("/api/record/:id/save-scan", requireAuth, async (req, res) => {
   }
 });
 
-// ---- Shopify barcode lookup (returns product + variants) ----
+// ---- Shopify barcode lookup ----
 app.get("/api/shopify/barcode/:barcode", requireAuth, async (req, res) => {
   try {
     const barcode = (req.params.barcode || "").trim();
@@ -209,7 +212,7 @@ app.get("/api/shopify/barcode/:barcode", requireAuth, async (req, res) => {
   }
 });
 
-// ---- NEW: Shopify product fetch by productId ----
+// ---- Shopify product fetch by productId ----
 app.get("/api/shopify/product/:productId", requireAuth, async (req, res) => {
   try {
     const productId = (req.params.productId || "").trim();
@@ -229,7 +232,7 @@ app.get("/api/shopify/product/:productId", requireAuth, async (req, res) => {
   }
 });
 
-// NEW: search Shopify products by title
+// ---- Search Shopify products by title ----
 app.get("/api/shopify/search", requireAuth, async (req, res) => {
   try {
     const title = String(req.query?.title || "").trim();
@@ -242,7 +245,7 @@ app.get("/api/shopify/search", requireAuth, async (req, res) => {
   }
 });
 
-// ---- NEW: Link Airtable record to Shopify product (writes Product GID into Airtable) ----
+// ---- Link Airtable record to Shopify product ----
 app.patch("/api/record/:id/link-shopify-product", requireAuth, async (req, res) => {
   try {
     const id = req.params.id;
@@ -334,8 +337,11 @@ app.post("/api/closeout", requireAuth, async (req, res) => {
     res.status(500).json({ error: e.message || "Closeout error" });
   }
 });
+
+// ---- Allocation PDF only ----
 app.post("/api/allocation-pdf", requireAuth, async (req, res) => {
   try {
+    const username = req.user?.username || "unknown";
     const { po, productLabel, sizes, locations, allocation } = req.body || {};
 
     if (!po) return res.status(400).json({ error: "Missing po" });
@@ -344,22 +350,24 @@ app.post("/api/allocation-pdf", requireAuth, async (req, res) => {
     if (!Array.isArray(locations) || !locations.length) return res.status(400).json({ error: "Missing locations" });
     if (typeof allocation !== "object" || !allocation) return res.status(400).json({ error: "Missing allocation" });
 
+    const createdAtISO = new Date().toISOString();
     const pdfBuffer = await buildAllocationPdf({
+      username,
       po,
       productLabel,
       sizes,
       locations,
-      allocation
+      allocation,
+      createdAtISO
     });
 
     res.setHeader("Content-Type", "application/pdf");
-    res.setHeader("Content-Disposition", `attachment; filename="allocation_${po}.pdf"`);
+    res.setHeader("Content-Disposition", `attachment; filename="allocation_${po || "PO"}_${Date.now()}.pdf"`);
     res.send(pdfBuffer);
   } catch (e) {
     res.status(500).json({ error: e.message || "Allocation PDF error" });
   }
 });
-
 
 // Debug route (kept)
 app.get("/api/shopify/debug-locations", requireAuth, async (req, res) => {
@@ -396,8 +404,6 @@ app.get("/api/shopify/debug-locations", requireAuth, async (req, res) => {
     res.status(500).json({ error: e.message });
   }
 });
-
-app.use(express.static(clientDist));
 
 // ---- Static client ----
 app.use(express.static(clientDist));
