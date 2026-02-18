@@ -491,7 +491,7 @@ function onAutoAllocate() {
   const avail = {};
   for (const s of sizes) avail[s] = Math.min(buy[s], ship[s]);
 
-  // Ship overage (ship > buy) goes to Warehouse (per size)
+  // Ship overage (ship > buy) goes to Warehouse (per size) — extra units above buy
   const overage = {};
   for (const s of sizes) overage[s] = Math.max(0, ship[s] - buy[s]);
 
@@ -500,7 +500,7 @@ function onAutoAllocate() {
   // Inventory pool we allocate from (starts at avail)
   let inv = { ...avail };
 
-  // Helper: safe add/subtract for matrix
+  // Helper: add scale to location
   const addToLoc = (mat, loc, scale) => {
     const out = structuredClone(mat);
     for (const [sz, qty] of Object.entries(scale)) {
@@ -509,145 +509,135 @@ function onAutoAllocate() {
     return out;
   };
 
-  const canBuildFull = (pool, scale) => computeMaxPacksAvailable(pool, scale) >= 1;
+  // Dynamic pack: core required, XL optional, XXS optional
+  const buildDynamicPack = (pool) => {
+    if (computeMaxPacksAvailable(pool, PACK_CORE_NO_XL) < 1) return null;
 
-  // A) “Starter” pack allowed only if:
-  // - it is that store’s FIRST pack
-  // - it includes at least 1 S
-  // - after applying it, at most ONE size in that store row is 0
-  // We implement a conservative starter pack: 1 unit in as many sizes as possible, with S required.
-  const buildStarterPack = (pool, useXXS) => {
-    const relevant = useXXS ? ["XXS", "XS", "S", "M", "L", "XL"] : ["XS", "S", "M", "L", "XL"];
+    const pack = { ...PACK_CORE_NO_XL };
 
-    // Must have at least 1 Small
-    if (Number(pool["S"] ?? 0) < 1) return null;
+    // XL optional (0 XL should NOT block)
+    if (Number(pool?.XL ?? 0) >= 1) pack.XL = 1;
 
-    const pack = {};
-    for (const sz of relevant) pack[sz] = 0;
-
-    // Give 1 S for sure
-    pack["S"] = 1;
-
-    // Try to give 1 in other sizes to avoid zeros (priority: XS,M,L,XL,XXS last)
-    const fillOrder = useXXS ? ["XS", "M", "L", "XL", "XXS"] : ["XS", "M", "L", "XL"];
-    for (const sz of fillOrder) {
-      if (Number(pool?.[sz] ?? 0) > 0) pack[sz] = 1;
-    }
-
-    // We allow at most one size to be 0 *within relevant sizes*
-    const zeros = relevant.reduce((acc, sz) => acc + (pack[sz] === 0 ? 1 : 0), 0);
-    if (zeros > 1) return null;
-
-    // Also must not exceed pool
-    for (const sz of relevant) {
-      if (pack[sz] > Number(pool?.[sz] ?? 0)) return null;
-    }
+    // XXS optional (XXS shortage should NOT block)
+    if (productHasXXS && Number(pool?.XXS ?? 0) >= 1) pack.XXS = 1;
 
     return pack;
   };
 
-  // Track whether a store has received any pack yet
-  const packsReceived = Object.fromEntries(locations.map((l) => [l, 0]));
+  // Starter pack rule (A): only for store's FIRST pack, must include at least 1S,
+  // and should be "core-ish" (missing at most one of XS/M/L). XL+XXS remain optional.
+  const buildStarterPack = (pool) => {
+    if (Number(pool?.S ?? 0) < 1) return null;
 
-  let built = built0;
+    const tryBuild = (need) => {
+      for (const [sz, qty] of Object.entries(need)) {
+        if (Number(pool?.[sz] ?? 0) < qty) return null;
+      }
+      return { ...need };
+    };
 
-  // D) Allocate packs only up to 15 sequence slots; after that, dump remainder to Warehouse.
-  for (let i = 0; i < PACK_SEQUENCE_1_TO_15.length; i++) {
-    const loc = PACK_SEQUENCE_1_TO_15[i];
-    if (!locations.includes(loc)) continue; // skip if location not present
+    // best: full core
+    let pack = tryBuild(PACK_CORE_NO_XL);
 
-    // New rule: XL optional like XXS.
-// We keep allocating as long as the CORE pack can be built.
-// Pack size varies: 9 (core only), +1 XL if available, +1 XXS if product has XXS and available.
+    // fallback starters (still includes S)
+    if (!pack) pack = tryBuild({ XS: 3, S: 3, M: 2 }); // missing L
+    if (!pack) pack = tryBuild({ XS: 3, S: 3, L: 1 }); // missing M
+    if (!pack) pack = tryBuild({ S: 3, M: 2, L: 1 });  // missing XS
 
-const canBuildCore = computeMaxPacksAvailable(inv, PACK_CORE_NO_XL) >= 1;
+    if (!pack) return null;
 
-if (canBuildCore) {
-  // Start with core
-  const pack = { ...PACK_CORE_NO_XL };
+    // XL optional
+    if (Number(pool?.XL ?? 0) >= 1) pack.XL = 1;
 
-  // Optional XL
-  if (Number(inv?.XL ?? 0) >= 1) {
-    pack.XL = 1;
+    // XXS optional
+    if (productHasXXS && Number(pool?.XXS ?? 0) >= 1) pack.XXS = 1;
+
+    return pack;
+  };
+
+  // Track packs received per location
+const packsReceived = Object.fromEntries(locations.map((l) => [l, 0]));
+
+let built = built0;
+let officeGiven = false;
+
+// D) Allocate packs via sequence (1..15)
+for (let i = 0; i < PACK_SEQUENCE_1_TO_15.length; i++) {
+  let loc = PACK_SEQUENCE_1_TO_15[i];
+
+  // Ignore Teaneck: route that "slot" to Warehouse
+  if (ignoreTeaneck && loc === "Teaneck Store") loc = "Warehouse";
+
+  if (!locations.includes(loc)) continue;
+
+  // Office rule: first Bogota pack gives 1 XS + 1 S to Office
+  if (
+    !officeGiven &&
+    loc === "Bogota" &&
+    packsReceived["Bogota"] === 0 &&
+    locations.includes("Office")
+  ) {
+    const hasXS = Number(inv?.XS ?? 0) >= 1;
+    const hasS = Number(inv?.S ?? 0) >= 1;
+
+    if (hasXS && hasS) {
+      built = addToLoc(built, "Office", { XS: 1, S: 1 });
+      inv = { ...inv, XS: inv.XS - 1, S: inv.S - 1 };
+      officeGiven = true;
+    }
   }
 
-  // Optional XXS (only if product has XXS sizing)
-  if (productHasXXS && Number(inv?.XXS ?? 0) >= 1) {
-    pack.XXS = 1;
+  // Try full dynamic pack first
+  const pack = buildDynamicPack(inv);
+  if (pack) {
+    built = addToLoc(built, loc, pack);
+
+    const nextInv = { ...inv };
+    for (const [sz, qty] of Object.entries(pack)) {
+      nextInv[sz] = Math.max(0, Number(nextInv?.[sz] ?? 0) - Number(qty ?? 0));
+    }
+    inv = nextInv;
+
+    packsReceived[loc] += 1;
+    continue;
   }
 
-  built = addToLoc(built, loc, pack);
+  // If no full pack, allow starter ONLY if this is store's first pack
+  if (packsReceived[loc] === 0) {
+    const starter = buildStarterPack(inv);
+    if (starter) {
+      built = addToLoc(built, loc, starter);
 
-  // Subtract the dynamic pack from inventory
-  const nextInv = { ...inv };
-  for (const [sz, qty] of Object.entries(pack)) {
-    nextInv[sz] = Math.max(0, Number(nextInv?.[sz] ?? 0) - Number(qty ?? 0));
+      const nextInv = { ...inv };
+      for (const [sz, qty] of Object.entries(starter)) {
+        nextInv[sz] = Math.max(0, Number(nextInv?.[sz] ?? 0) - Number(qty ?? 0));
+      }
+      inv = nextInv;
+
+      packsReceived[loc] += 1;
+      continue;
+    }
   }
-  inv = nextInv;
 
-  packsReceived[loc] += 1;
-  continue;
+  // Too broken → stop allocating packs
+  break;
 }
 
-    // A) No full pack possible. Consider a starter pack ONLY if this is store's first pack.
-    // Also, starter must satisfy: includes >=1S and leaves at most one size 0 in the pack.
-    if (packsReceived[loc] === 0) {
-      // If product has XXS, try a starter that includes XXS if available; otherwise do without XXS
-      const starter =
-        (productHasXXS ? buildStarterPack(inv, true) : null) ||
-        buildStarterPack(inv, false);
+// D) After pack distribution, ALL remaining units go to Warehouse (loose units)
+const sink = locations.includes("Warehouse") ? "Warehouse" : locations[0];
+for (const s of sizes) {
+  built[sink][s] = Number(built?.[sink]?.[s] ?? 0) + Number(inv?.[s] ?? 0);
+}
 
-      if (starter) {
-        built = addToLoc(built, loc, starter);
 
-        // subtract starter from inv
-        const nextInv = { ...inv };
-        for (const [sz, qty] of Object.entries(starter)) {
-          nextInv[sz] = Math.max(0, Number(nextInv?.[sz] ?? 0) - Number(qty ?? 0));
-        }
-        inv = nextInv;
-
-        packsReceived[loc] += 1;
-        continue;
-      }
-    }
-
-    // Otherwise stop pack distribution: remainder is "too broken"
-    break;
-  }
-
-  // D) After pack distribution, EVERYTHING remaining goes to Warehouse (loose units)
-  const sink = locations.includes("Warehouse") ? "Warehouse" : locations[0];
+  // Add ship overage (ship>buy) to Warehouse too
   for (const s of sizes) {
-    built[sink][s] = Number(built?.[sink]?.[s] ?? 0) + Number(inv?.[s] ?? 0);
+    built[sink][s] = Number(built?.[sink]?.[s] ?? 0) + Number(overage?.[s] ?? 0);
   }
 
-  // Add ship overage (ship>buy) to Warehouse as well
-  if (locations.includes("Warehouse")) {
-    for (const s of sizes) {
-      built["Warehouse"][s] = Number(built?.["Warehouse"]?.[s] ?? 0) + Number(overage?.[s] ?? 0);
-    }
-  } else {
-    for (const s of sizes) {
-      built[sink][s] = Number(built?.[sink]?.[s] ?? 0) + Number(overage?.[s] ?? 0);
-    }
-  }
 
-  // E) Office units always pulled from Bogota: 1 XS + 1 S (if possible)
-  if (locations.includes("Office") && locations.includes("Bogota")) {
-    const pull = (size) => {
-      const have = Number(built?.["Bogota"]?.[size] ?? 0);
-      if (have <= 0) return;
-      built["Bogota"][size] = have - 1;
-      built["Office"][size] = Number(built?.["Office"]?.[size] ?? 0) + 1;
-    };
-    pull("XS");
-    pull("S");
-  }
-
-  // Safety: never exceed shipped totals per size (should already be true due to avail=min,
-  // but overage addition could push above ship if data is weird; clamp just in case).
-  // If excess exists, remove from Warehouse then Teaneck then Toms.
+  // Hard safety: never exceed shipped totals per size.
+  // Remove from Warehouse first, then Teaneck, then Toms (then others as last resort).
   const removalOrder = ["Warehouse", "Teaneck Store", "Toms River", "Bogota", "Cedarhurst", "Office"].filter((l) =>
     locations.includes(l)
   );
@@ -670,8 +660,9 @@ if (canBuildCore) {
   }
 
   setAlloc(built);
-  setStatus("Auto Allocated ✅ Pack-sequence allocator (A–F) applied.");
+  setStatus("Auto Allocated ✅ Pack-sequence allocator applied (avail=min(buy,ship); XXS+XL optional; IgnoreTeaneck supported).");
 }
+
 
 
   // ---------- Mode 2: Save Allocation ----------
