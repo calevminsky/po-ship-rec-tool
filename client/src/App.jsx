@@ -20,46 +20,43 @@ import {
  * Allocation rules (updated):
  * - Allocation is based on BUY total.
  * - Overage (ship - buy) goes to Warehouse.
- * - Packs:
- *   - With XXS: 1,3,3,2,1,1 (XXS-XL) = 11
- *   - No XXS:  3,3,2,1,1 (XS-XL) = 10
- * - Office: 1 XS to Office first (if XS available).
- * - Ignore Teaneck: exclude Teaneck from store pack distribution (its would-be packs go to Warehouse).
+ * - Packs are built from inv = min(buy, ship).
+ * - Office rule (ONLY rule):
+ *   - On Bogota’s FIRST successful pack, move 1 XS + 1 S FROM Bogota allocation to Office (if possible).
+ * - Ignore Teaneck:
+ *   - exclude Teaneck from store pack distribution (its would-be packs go to Warehouse).
  */
-
 
 // Pack sequence (1..15). After 15 packs, remainder goes to Warehouse.
 const PACK_SEQUENCE_1_TO_15 = [
-  "Cedarhurst",   // 1
-  "Cedarhurst",   // 2
-  "Bogota",       // 3
-  "Bogota",       // 4
-  "Toms River",   // 5
-  "Teaneck Store",// 6
-  "Cedarhurst",   // 7
-  "Bogota",       // 8
-  "Toms River",   // 9
-  "Cedarhurst",   // 10
-  "Warehouse",    // 11
-  "Warehouse",    // 12
-  "Bogota",       // 13
-  "Cedarhurst",   // 14
-  "Warehouse"     // 15
+  "Cedarhurst", // 1
+  "Cedarhurst", // 2
+  "Bogota", // 3
+  "Bogota", // 4
+  "Toms River", // 5
+  "Teaneck Store", // 6
+  "Cedarhurst", // 7
+  "Bogota", // 8
+  "Toms River", // 9
+  "Cedarhurst", // 10
+  "Warehouse", // 11
+  "Warehouse", // 12
+  "Bogota", // 13
+  "Cedarhurst", // 14
+  "Warehouse" // 15
 ];
-const PACK_CORE_NO_XL = { XS: 3, S: 3, M: 2, L: 1 }; // 9 units (XL optional, XXS optional)
 
+const PACK_CORE_NO_XL = { XS: 3, S: 3, M: 2, L: 1 }; // 9 units (XL optional, XXS optional)
 
 const SIZES = ["XXS", "XS", "S", "M", "L", "XL"];
 const DEFAULT_LOCATIONS = ["Bogota", "Cedarhurst", "Toms River", "Teaneck Store", "Office", "Warehouse"];
 
+// (Not currently used by the allocator below, but leaving in place)
 const PACK_WITH_XXS = { XXS: 1, XS: 3, S: 3, M: 2, L: 1, XL: 1 }; // 11
 const PACK_NO_XXS = { XS: 3, S: 3, M: 2, L: 1, XL: 1 }; // 10
-
-// You can tweak priority if sizes are too tight to fulfill all planned packs
 const STORE_PACK_PRIORITY = ["Cedarhurst", "Bogota", "Toms River", "Teaneck Store"];
 
-// Pack plan “shape”. These are examples and can be tuned.
-// Key is buy total (after office XS removed is effectively handled automatically).
+// (Not currently used by the allocator below, but leaving in place)
 const PACK_PLAN_NO_XXS = [
   { minTotal: 200, packs: { Bogota: 4, Cedarhurst: 5, "Toms River": 2, "Teaneck Store": 1, Warehouse: 8 } },
   { minTotal: 190, packs: { Bogota: 4, Cedarhurst: 5, "Toms River": 2, "Teaneck Store": 1, Warehouse: 7 } },
@@ -72,18 +69,16 @@ const PACK_PLAN_NO_XXS = [
   { minTotal: 120, packs: { Bogota: 4, Cedarhurst: 5, "Toms River": 2, "Teaneck Store": 1, Warehouse: 0 } },
   { minTotal: 110, packs: { Bogota: 3, Cedarhurst: 5, "Toms River": 2, "Teaneck Store": 1, Warehouse: 0 } },
   { minTotal: 100, packs: { Bogota: 3, Cedarhurst: 4, "Toms River": 2, "Teaneck Store": 1, Warehouse: 0 } },
-  { minTotal: 90,  packs: { Bogota: 3, Cedarhurst: 3, "Toms River": 2, "Teaneck Store": 1, Warehouse: 0 } },
-  { minTotal: 80,  packs: { Bogota: 3, Cedarhurst: 3, "Toms River": 1, "Teaneck Store": 1, Warehouse: 0 } },
-  { minTotal: 70,  packs: { Bogota: 2, Cedarhurst: 3, "Toms River": 1, "Teaneck Store": 1, Warehouse: 0 } },
-  { minTotal: 60,  packs: { Bogota: 2, Cedarhurst: 2, "Toms River": 1, "Teaneck Store": 1, Warehouse: 0 } }
+  { minTotal: 90, packs: { Bogota: 3, Cedarhurst: 3, "Toms River": 2, "Teaneck Store": 1, Warehouse: 0 } },
+  { minTotal: 80, packs: { Bogota: 3, Cedarhurst: 3, "Toms River": 1, "Teaneck Store": 1, Warehouse: 0 } },
+  { minTotal: 70, packs: { Bogota: 2, Cedarhurst: 3, "Toms River": 1, "Teaneck Store": 1, Warehouse: 0 } },
+  { minTotal: 60, packs: { Bogota: 2, Cedarhurst: 2, "Toms River": 1, "Teaneck Store": 1, Warehouse: 0 } }
 ];
 
-
-
 const PACK_PLAN_WITH_XXS = [
-  { minTotal: 154, packs: { Bogota: 3, Cedarhurst: 4, "Toms River": 2, "Teaneck Store": 1 } }, // 10 packs * 11 = 110, leftover->WH
-  { minTotal: 88, packs: { Bogota: 2, Cedarhurst: 3, "Toms River": 1, "Teaneck Store": 2 } }, // 8 packs * 11 = 88
-  { minTotal: 66, packs: { Bogota: 2, Cedarhurst: 2, "Toms River": 1, "Teaneck Store": 1 } } // 6 packs * 11 = 66
+  { minTotal: 154, packs: { Bogota: 3, Cedarhurst: 4, "Toms River": 2, "Teaneck Store": 1 } },
+  { minTotal: 88, packs: { Bogota: 2, Cedarhurst: 3, "Toms River": 1, "Teaneck Store": 2 } },
+  { minTotal: 66, packs: { Bogota: 2, Cedarhurst: 2, "Toms River": 1, "Teaneck Store": 1 } }
 ];
 
 function clampInt(v) {
@@ -161,7 +156,6 @@ function sumPerSize(obj, sizes) {
 
 /**
  * Try to build N full packs from available inventoryBySize.
- * Returns { builtPacks, usedBySize }.
  */
 function computeMaxPacksAvailable(inventoryBySize, packScale) {
   let max = Infinity;
@@ -192,14 +186,12 @@ function addPackToMatrix(matrix, loc, packScale, packsCount = 1) {
 
 function pickPlan(total) {
   const plans = PACK_PLAN_NO_XXS;
-  const FUDGE = 2; // within a couple units (79 uses the 80 grid)
+  const FUDGE = 2;
   for (const p of plans) {
-    if (total >= (p.minTotal - FUDGE)) return p.packs;
+    if (total >= p.minTotal - FUDGE) return p.packs;
   }
   return plans[plans.length - 1]?.packs || {};
 }
-
-
 
 export default function App() {
   // ---------- AUTH ----------
@@ -474,196 +466,226 @@ export default function App() {
   }
 
   // ---------- Mode 2: Auto Allocate (pack-based, BUY-based) ----------
-function onAutoAllocate() {
-  if (!selected) return;
+  function onAutoAllocate() {
+    if (!selected) return;
 
-  const built0 = emptyMatrix(locations, sizes);
+    const built0 = emptyMatrix(locations, sizes);
 
-  // BUY + SHIP
-  const buy = {};
-  const ship = {};
-  for (const s of sizes) {
-    buy[s] = Number(selected?.buy?.[s] ?? 0);
-    ship[s] = Number(shipTotalsBySize?.[s] ?? 0);
-  }
-
-  // F) Available units = min(buy, ship)
-  const avail = {};
-  for (const s of sizes) avail[s] = Math.min(buy[s], ship[s]);
-
-  // Ship overage (ship > buy) goes to Warehouse (per size) — extra units above buy
-  const overage = {};
-  for (const s of sizes) overage[s] = Math.max(0, ship[s] - buy[s]);
-
-  const productHasXXS = Number(buy.XXS ?? 0) > 0 || Number(ship.XXS ?? 0) > 0;
-
-  // Inventory pool we allocate from (starts at avail)
-  let inv = { ...avail };
-
-  // Helper: add scale to location
-  const addToLoc = (mat, loc, scale) => {
-    const out = structuredClone(mat);
-    for (const [sz, qty] of Object.entries(scale)) {
-      out[loc][sz] = Number(out?.[loc]?.[sz] ?? 0) + Number(qty ?? 0);
+    // BUY + SHIP
+    const buy = {};
+    const ship = {};
+    for (const s of sizes) {
+      buy[s] = Number(selected?.buy?.[s] ?? 0);
+      ship[s] = Number(shipTotalsBySize?.[s] ?? 0);
     }
-    return out;
-  };
 
-  // Dynamic pack: core required, XL optional, XXS optional
-  const buildDynamicPack = (pool) => {
-    if (computeMaxPacksAvailable(pool, PACK_CORE_NO_XL) < 1) return null;
+    // Available units = min(buy, ship)
+    const avail = {};
+    for (const s of sizes) avail[s] = Math.min(buy[s], ship[s]);
 
-    const pack = { ...PACK_CORE_NO_XL };
+    // Ship overage (ship > buy) goes to Warehouse (per size)
+    const overage = {};
+    for (const s of sizes) overage[s] = Math.max(0, ship[s] - buy[s]);
 
-    // XL optional (0 XL should NOT block)
-    if (Number(pool?.XL ?? 0) >= 1) pack.XL = 1;
+    const productHasXXS = Number(buy.XXS ?? 0) > 0 || Number(ship.XXS ?? 0) > 0;
 
-    // XXS optional (XXS shortage should NOT block)
-    if (productHasXXS && Number(pool?.XXS ?? 0) >= 1) pack.XXS = 1;
+    // Inventory pool we allocate from
+    let inv = { ...avail };
 
-    return pack;
-  };
-
-  // Starter pack rule (A): only for store's FIRST pack, must include at least 1S,
-  // and should be "core-ish" (missing at most one of XS/M/L). XL+XXS remain optional.
-  const buildStarterPack = (pool) => {
-    if (Number(pool?.S ?? 0) < 1) return null;
-
-    const tryBuild = (need) => {
-      for (const [sz, qty] of Object.entries(need)) {
-        if (Number(pool?.[sz] ?? 0) < qty) return null;
+    // Helper: add scale to location
+    const addToLoc = (mat, loc, scale) => {
+      const out = structuredClone(mat);
+      for (const [sz, qty] of Object.entries(scale)) {
+        out[loc][sz] = Number(out?.[loc]?.[sz] ?? 0) + Number(qty ?? 0);
       }
-      return { ...need };
+      return out;
     };
 
-    // best: full core
-    let pack = tryBuild(PACK_CORE_NO_XL);
+    // Helper: move 1 XS + 1 S from Bogota allocation to Office
+    // (this guarantees it comes FROM Bogota inventory/allocation)
+    const moveBogotaToOfficeXSAndS = (mat) => {
+      if (!locations.includes("Office")) return mat;
+      if (!locations.includes("Bogota")) return mat;
 
-    // fallback starters (still includes S)
-    if (!pack) pack = tryBuild({ XS: 3, S: 3, M: 2 }); // missing L
-    if (!pack) pack = tryBuild({ XS: 3, S: 3, L: 1 }); // missing M
-    if (!pack) pack = tryBuild({ S: 3, M: 2, L: 1 });  // missing XS
+      const out = structuredClone(mat);
+      const bogXS = Number(out?.["Bogota"]?.XS ?? 0);
+      const bogS = Number(out?.["Bogota"]?.S ?? 0);
 
-    if (!pack) return null;
-
-    // XL optional
-    if (Number(pool?.XL ?? 0) >= 1) pack.XL = 1;
-
-    // XXS optional
-    if (productHasXXS && Number(pool?.XXS ?? 0) >= 1) pack.XXS = 1;
-
-    return pack;
-  };
-
-  // Track packs received per location
-const packsReceived = Object.fromEntries(locations.map((l) => [l, 0]));
-
-let built = built0;
-let officeGiven = false;
-
-// D) Allocate packs via sequence (1..15)
-for (let i = 0; i < PACK_SEQUENCE_1_TO_15.length; i++) {
-  let loc = PACK_SEQUENCE_1_TO_15[i];
-
-  // Ignore Teaneck: route that "slot" to Warehouse
-  if (ignoreTeaneck && loc === "Teaneck Store") loc = "Warehouse";
-
-  if (!locations.includes(loc)) continue;
-
-  // Office rule: first Bogota pack gives 1 XS + 1 S to Office
-  if (
-    !officeGiven &&
-    loc === "Bogota" &&
-    packsReceived["Bogota"] === 0 &&
-    locations.includes("Office")
-  ) {
-    const hasXS = Number(inv?.XS ?? 0) >= 1;
-    const hasS = Number(inv?.S ?? 0) >= 1;
-
-    if (hasXS && hasS) {
-      built = addToLoc(built, "Office", { XS: 1, S: 1 });
-      inv = { ...inv, XS: inv.XS - 1, S: inv.S - 1 };
-      officeGiven = true;
-    }
-  }
-
-  // Try full dynamic pack first
-  const pack = buildDynamicPack(inv);
-  if (pack) {
-    built = addToLoc(built, loc, pack);
-
-    const nextInv = { ...inv };
-    for (const [sz, qty] of Object.entries(pack)) {
-      nextInv[sz] = Math.max(0, Number(nextInv?.[sz] ?? 0) - Number(qty ?? 0));
-    }
-    inv = nextInv;
-
-    packsReceived[loc] += 1;
-    continue;
-  }
-
-  // If no full pack, allow starter ONLY if this is store's first pack
-  if (packsReceived[loc] === 0) {
-    const starter = buildStarterPack(inv);
-    if (starter) {
-      built = addToLoc(built, loc, starter);
-
-      const nextInv = { ...inv };
-      for (const [sz, qty] of Object.entries(starter)) {
-        nextInv[sz] = Math.max(0, Number(nextInv?.[sz] ?? 0) - Number(qty ?? 0));
+      if (bogXS >= 1 && bogS >= 1) {
+        out["Bogota"].XS = bogXS - 1;
+        out["Bogota"].S = bogS - 1;
+        out["Office"].XS = Number(out?.["Office"]?.XS ?? 0) + 1;
+        out["Office"].S = Number(out?.["Office"]?.S ?? 0) + 1;
       }
-      inv = nextInv;
+      return out;
+    };
 
-      packsReceived[loc] += 1;
+    // Dynamic pack: core required, XL optional, XXS optional
+    const buildDynamicPack = (pool) => {
+      if (computeMaxPacksAvailable(pool, PACK_CORE_NO_XL) < 1) return null;
+
+      const pack = { ...PACK_CORE_NO_XL };
+
+      // XL optional
+      if (Number(pool?.XL ?? 0) >= 1) pack.XL = 1;
+
+      // XXS optional
+      if (productHasXXS && Number(pool?.XXS ?? 0) >= 1) pack.XXS = 1;
+
+      return pack;
+    };
+
+    // Starter pack rule: only for store's FIRST pack, must include at least 1S,
+    // and should be "core-ish" (missing at most one of XS/M/L). XL+XXS remain optional.
+    const buildStarterPack = (pool) => {
+      if (Number(pool?.S ?? 0) < 1) return null;
+
+      const tryBuild = (need) => {
+        for (const [sz, qty] of Object.entries(need)) {
+          if (Number(pool?.[sz] ?? 0) < qty) return null;
+        }
+        return { ...need };
+      };
+
+      // best: full core
+      let pack = tryBuild(PACK_CORE_NO_XL);
+
+      // fallback starters (still includes S)
+      if (!pack) pack = tryBuild({ XS: 3, S: 3, M: 2 }); // missing L
+      if (!pack) pack = tryBuild({ XS: 3, S: 3, L: 1 }); // missing M
+      if (!pack) pack = tryBuild({ S: 3, M: 2, L: 1 }); // missing XS
+
+      if (!pack) return null;
+
+      // XL optional
+      if (Number(pool?.XL ?? 0) >= 1) pack.XL = 1;
+
+      // XXS optional
+      if (productHasXXS && Number(pool?.XXS ?? 0) >= 1) pack.XXS = 1;
+
+      return pack;
+    };
+
+    // Track packs received per location
+    const packsReceived = Object.fromEntries(locations.map((l) => [l, 0]));
+
+    let built = built0;
+    let officeGiven = false;
+
+    // Allocate packs via sequence (1..15)
+    for (let i = 0; i < PACK_SEQUENCE_1_TO_15.length; i++) {
+      let loc = PACK_SEQUENCE_1_TO_15[i];
+
+      // Ignore Teaneck: route that "slot" to Warehouse
+      if (ignoreTeaneck && loc === "Teaneck Store") loc = "Warehouse";
+
+      if (!locations.includes(loc)) continue;
+
+      // Try full dynamic pack first
+      const pack = buildDynamicPack(inv);
+      if (pack) {
+        built = addToLoc(built, loc, pack);
+
+        // subtract from inv
+        const nextInv = { ...inv };
+        for (const [sz, qty] of Object.entries(pack)) {
+          nextInv[sz] = Math.max(0, Number(nextInv?.[sz] ?? 0) - Number(qty ?? 0));
+        }
+        inv = nextInv;
+
+        // mark pack received
+        packsReceived[loc] += 1;
+
+        // ✅ Office rule: on Bogota FIRST successful pack, move XS+S from Bogota to Office
+        if (!officeGiven && loc === "Bogota" && packsReceived["Bogota"] === 1 && locations.includes("Office")) {
+          const before = built;
+          built = moveBogotaToOfficeXSAndS(built);
+          // Only consider it "given" if it actually moved (avoid lying if Bogota starter had no XS)
+          if (
+            Number(before?.Office?.XS ?? 0) !== Number(built?.Office?.XS ?? 0) ||
+            Number(before?.Office?.S ?? 0) !== Number(built?.Office?.S ?? 0)
+          ) {
+            officeGiven = true;
+          }
+        }
+
+        continue;
+      }
+
+      // If no full pack, allow starter ONLY if this is store's first pack
+      if (packsReceived[loc] === 0) {
+        const starter = buildStarterPack(inv);
+        if (starter) {
+          built = addToLoc(built, loc, starter);
+
+          const nextInv = { ...inv };
+          for (const [sz, qty] of Object.entries(starter)) {
+            nextInv[sz] = Math.max(0, Number(nextInv?.[sz] ?? 0) - Number(qty ?? 0));
+          }
+          inv = nextInv;
+
+          packsReceived[loc] += 1;
+
+          // ✅ Office rule also applies if Bogota’s first pack is a starter
+          if (!officeGiven && loc === "Bogota" && packsReceived["Bogota"] === 1 && locations.includes("Office")) {
+            const before = built;
+            built = moveBogotaToOfficeXSAndS(built);
+            if (
+              Number(before?.Office?.XS ?? 0) !== Number(built?.Office?.XS ?? 0) ||
+              Number(before?.Office?.S ?? 0) !== Number(built?.Office?.S ?? 0)
+            ) {
+              officeGiven = true;
+            }
+          }
+
+          continue;
+        }
+      }
+
+      // ✅ IMPORTANT FIX: do NOT stop the whole sequence (this is why Bogota missed its later turn #13)
+      // If this slot can't take a pack, just skip it and keep going.
       continue;
     }
-  }
 
-  // Too broken → stop allocating packs
-  break;
-}
+    // After pack distribution, ALL remaining units go to Warehouse (loose units)
+    const sink = locations.includes("Warehouse") ? "Warehouse" : locations[0];
+    for (const s of sizes) {
+      built[sink][s] = Number(built?.[sink]?.[s] ?? 0) + Number(inv?.[s] ?? 0);
+    }
 
-// D) After pack distribution, ALL remaining units go to Warehouse (loose units)
-const sink = locations.includes("Warehouse") ? "Warehouse" : locations[0];
-for (const s of sizes) {
-  built[sink][s] = Number(built?.[sink]?.[s] ?? 0) + Number(inv?.[s] ?? 0);
-}
+    // Add ship overage (ship>buy) to Warehouse too
+    for (const s of sizes) {
+      built[sink][s] = Number(built?.[sink]?.[s] ?? 0) + Number(overage?.[s] ?? 0);
+    }
 
+    // Hard safety: never exceed shipped totals per size.
+    // Remove from Warehouse first, then Teaneck, then Toms (then others as last resort).
+    const removalOrder = ["Warehouse", "Teaneck Store", "Toms River", "Bogota", "Cedarhurst", "Office"].filter((l) =>
+      locations.includes(l)
+    );
 
-  // Add ship overage (ship>buy) to Warehouse too
-  for (const s of sizes) {
-    built[sink][s] = Number(built?.[sink]?.[s] ?? 0) + Number(overage?.[s] ?? 0);
-  }
+    for (const s of sizes) {
+      const totalAllocated = locations.reduce((a, loc) => a + Number(built?.[loc]?.[s] ?? 0), 0);
+      const cap = Number(ship?.[s] ?? 0);
+      if (totalAllocated <= cap) continue;
 
-
-  // Hard safety: never exceed shipped totals per size.
-  // Remove from Warehouse first, then Teaneck, then Toms (then others as last resort).
-  const removalOrder = ["Warehouse", "Teaneck Store", "Toms River", "Bogota", "Cedarhurst", "Office"].filter((l) =>
-    locations.includes(l)
-  );
-
-  for (const s of sizes) {
-    const totalAllocated = locations.reduce((a, loc) => a + Number(built?.[loc]?.[s] ?? 0), 0);
-    const cap = Number(ship?.[s] ?? 0);
-    if (totalAllocated <= cap) continue;
-
-    let excess = totalAllocated - cap;
-    for (const loc of removalOrder) {
-      if (excess <= 0) break;
-      const have = Number(built?.[loc]?.[s] ?? 0);
-      const take = Math.min(have, excess);
-      if (take > 0) {
-        built[loc][s] = have - take;
-        excess -= take;
+      let excess = totalAllocated - cap;
+      for (const loc of removalOrder) {
+        if (excess <= 0) break;
+        const have = Number(built?.[loc]?.[s] ?? 0);
+        const take = Math.min(have, excess);
+        if (take > 0) {
+          built[loc][s] = have - take;
+          excess -= take;
+        }
       }
     }
+
+    setAlloc(built);
+    setStatus(
+      "Auto Allocated ✅ Sequence allocator applied (inv=min(buy,ship); XXS+XL optional; IgnoreTeaneck supported; Bogota-first-pack XS+S moved to Office)."
+    );
   }
-
-  setAlloc(built);
-  setStatus("Auto Allocated ✅ Pack-sequence allocator applied (avail=min(buy,ship); XXS+XL optional; IgnoreTeaneck supported).");
-}
-
-
 
   // ---------- Mode 2: Save Allocation ----------
   async function onSaveAllocation() {
@@ -673,7 +695,9 @@ for (const s of sizes) {
       const diffs = diffPerSize(allocTotalsBySize, shipTotalsBySize, sizes);
       const msg =
         "Allocation totals do not match Ship Units.\n\n" +
-        sizes.map((s) => `${s}: alloc ${allocTotalsBySize[s]} vs ship ${shipTotalsBySize[s]} (diff ${diffs[s]})`).join("\n") +
+        sizes
+          .map((s) => `${s}: alloc ${allocTotalsBySize[s]} vs ship ${shipTotalsBySize[s]} (diff ${diffs[s]})`)
+          .join("\n") +
         "\n\nSubmit anyway?";
       const ok = window.confirm(msg);
       if (!ok) return;
@@ -690,49 +714,49 @@ for (const s of sizes) {
       setLoading(false);
     }
   }
-async function onSubmitAllocationAndDownloadPdf() {
-  if (!selectedId || !selected) return;
 
-  if (!allocMatchesShip) {
-    const ok = window.confirm("Allocation does NOT match Ship Units.\n\nSubmit + PDF anyway?");
-    if (!ok) return;
+  async function onSubmitAllocationAndDownloadPdf() {
+    if (!selectedId || !selected) return;
+
+    if (!allocMatchesShip) {
+      const ok = window.confirm("Allocation does NOT match Ship Units.\n\nSubmit + PDF anyway?");
+      if (!ok) return;
+    }
+
+    try {
+      setLoading(true);
+      setStatus("Submitting allocation… Generating Allocation PDF…");
+
+      // Save allocation first (so Airtable is in sync)
+      await saveAllocation(selectedId, alloc);
+
+      const payload = {
+        recordId: selectedId,
+        po: poData?.po || "",
+        productLabel: selected.label,
+        sizes,
+        locations,
+        allocation: alloc
+      };
+
+      const pdfBlob = await allocationPdf(payload);
+
+      const url = URL.createObjectURL(pdfBlob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `allocation_${poData?.po || "PO"}_${Date.now()}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+
+      setStatus("Allocation submitted ✅ Allocation PDF downloaded.");
+    } catch (e) {
+      setStatus(`Allocation submit/PDF failed: ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
   }
-
-  try {
-    setLoading(true);
-    setStatus("Submitting allocation… Generating Allocation PDF…");
-
-    // Save allocation first (so Airtable is in sync)
-    await saveAllocation(selectedId, alloc);
-
-    const payload = {
-      recordId: selectedId,
-      po: poData?.po || "",
-      productLabel: selected.label,
-      sizes,
-      locations,
-      allocation: alloc
-    };
-
-    const pdfBlob = await allocationPdf(payload);
-
-    const url = URL.createObjectURL(pdfBlob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `allocation_${poData?.po || "PO"}_${Date.now()}.pdf`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-
-    setStatus("Allocation submitted ✅ Allocation PDF downloaded.");
-  } catch (e) {
-    setStatus(`Allocation submit/PDF failed: ${e.message}`);
-  } finally {
-    setLoading(false);
-  }
-}
-
 
   // ---------- Shopify: Link by barcode ----------
   async function onLinkShopifyAndPersist() {
@@ -1023,9 +1047,7 @@ async function onSubmitAllocationAndDownloadPdf() {
                 <div className="modeBar">
                   <div className="modePill">
                     Mode:{" "}
-                    <strong>
-                      {mode === "shipping" ? "Shipping" : mode === "allocation" ? "Allocation" : "Receiving"}
-                    </strong>
+                    <strong>{mode === "shipping" ? "Shipping" : mode === "allocation" ? "Allocation" : "Receiving"}</strong>
                   </div>
                   <button className="btn" onClick={() => setMode(null)}>
                     Change
@@ -1275,11 +1297,7 @@ async function onSubmitAllocationAndDownloadPdf() {
                       </button>
 
                       <label style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: 10 }}>
-                        <input
-                          type="checkbox"
-                          checked={ignoreTeaneck}
-                          onChange={(e) => setIgnoreTeaneck(e.target.checked)}
-                        />
+                        <input type="checkbox" checked={ignoreTeaneck} onChange={(e) => setIgnoreTeaneck(e.target.checked)} />
                         Ignore Teaneck
                       </label>
 
@@ -1303,14 +1321,9 @@ async function onSubmitAllocationAndDownloadPdf() {
                       <button className="btn primary" onClick={onSaveAllocation} disabled={loading || !selectedId} type="button">
                         Submit Allocation
                       </button>
-                      <button
-  className="btn primary"
-  onClick={onSubmitAllocationAndDownloadPdf}
-  disabled={loading || !selectedId}
->
-  Submit + Download Allocation PDF
-</button>
-
+                      <button className="btn primary" onClick={onSubmitAllocationAndDownloadPdf} disabled={loading || !selectedId}>
+                        Submit + Download Allocation PDF
+                      </button>
                     </div>
                   </>
                 ) : null}
