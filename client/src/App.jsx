@@ -27,6 +27,27 @@ import {
  * - Ignore Teaneck: exclude Teaneck from store pack distribution (its would-be packs go to Warehouse).
  */
 
+
+// Pack sequence (1..15). After 15 packs, remainder goes to Warehouse.
+const PACK_SEQUENCE_1_TO_15 = [
+  "Cedarhurst",   // 1
+  "Cedarhurst",   // 2
+  "Bogota",       // 3
+  "Bogota",       // 4
+  "Toms River",   // 5
+  "Teaneck Store",// 6
+  "Cedarhurst",   // 7
+  "Bogota",       // 8
+  "Toms River",   // 9
+  "Cedarhurst",   // 10
+  "Warehouse",    // 11
+  "Warehouse",    // 12
+  "Bogota",       // 13
+  "Cedarhurst",   // 14
+  "Warehouse"     // 15
+];
+
+
 const SIZES = ["XXS", "XS", "S", "M", "L", "XL"];
 const DEFAULT_LOCATIONS = ["Bogota", "Cedarhurst", "Toms River", "Teaneck Store", "Office", "Warehouse"];
 
@@ -455,227 +476,192 @@ export default function App() {
 function onAutoAllocate() {
   if (!selected) return;
 
-  const nextAlloc = emptyMatrix(locations, sizes);
+  const built0 = emptyMatrix(locations, sizes);
 
-  // BUY totals
+  // BUY + SHIP
   const buy = {};
-  for (const s of sizes) buy[s] = Number(selected?.buy?.[s] ?? 0);
-
-  // SHIP totals (must never exceed these)
-  const ship = { ...shipTotalsBySize };
-
-  // ---- GRID SELECTION RULE FOR XXS ----
-  // If XXS exists, choose plan based on total excluding XXS
-  const totalBuy = sizes.reduce((a, s) => a + Number(buy?.[s] ?? 0), 0);
-  const xxsBuy = Number(buy?.["XXS"] ?? 0);
-  const gridTotal = Math.max(0, totalBuy - xxsBuy);
-
-  const plan = pickPlan(gridTotal);
-
-  // Packs are XS-XL only (10 pack)
-  const packScale = PACK_NO_XXS;
-
-  // Inventory used for pack building: ignore XXS
-  let inv = { ...buy, XXS: 0 };
-
-  const stores = Object.keys(plan || {});
-  const desiredPacks = { ...plan };
-
-  // Distribute packs (limited by size availability)
-  const maxPossiblePacks = computeMaxPacksAvailable(inv, packScale);
-
-  const priority = STORE_PACK_PRIORITY.filter((s) => stores.includes(s));
-  for (const s of stores) if (!priority.includes(s)) priority.push(s);
-
-  const packsGiven = Object.fromEntries(stores.map((s) => [s, 0]));
-  let packsLeftWeCanBuild = maxPossiblePacks;
-
-  while (packsLeftWeCanBuild > 0) {
-    let gaveAny = false;
-
-    for (const store of priority) {
-      if (packsLeftWeCanBuild <= 0) break;
-
-      const want = Number(desiredPacks[store] ?? 0);
-      if (packsGiven[store] >= want) continue;
-
-      const canBuild = computeMaxPacksAvailable(inv, packScale);
-      if (canBuild <= 0) {
-        packsLeftWeCanBuild = 0;
-        break;
-      }
-
-      packsGiven[store] += 1;
-      inv = subtractPack(inv, packScale, 1);
-      gaveAny = true;
-      packsLeftWeCanBuild -= 1;
-    }
-
-    if (!gaveAny) break;
+  const ship = {};
+  for (const s of sizes) {
+    buy[s] = Number(selected?.buy?.[s] ?? 0);
+    ship[s] = Number(shipTotalsBySize?.[s] ?? 0);
   }
 
-  // Apply packs
-  let built = nextAlloc;
-  for (const store of stores) {
-    const count = Number(packsGiven[store] ?? 0);
-    if (count <= 0) continue;
-    built = addPackToMatrix(built, store, packScale, count);
-  }
+  // F) Available units = min(buy, ship)
+  const avail = {};
+  for (const s of sizes) avail[s] = Math.min(buy[s], ship[s]);
 
-  // Leftover XS-XL inventory goes to Warehouse
-  if (locations.includes("Warehouse")) {
-    for (const s of ["XS", "S", "M", "L", "XL"]) {
-      built["Warehouse"][s] = Number(built["Warehouse"][s] ?? 0) + Number(inv[s] ?? 0);
+  // Ship overage (ship > buy) goes to Warehouse (per size)
+  const overage = {};
+  for (const s of sizes) overage[s] = Math.max(0, ship[s] - buy[s]);
+
+  const productHasXXS = Number(buy.XXS ?? 0) > 0 || Number(ship.XXS ?? 0) > 0;
+
+  // Inventory pool we allocate from (starts at avail)
+  let inv = { ...avail };
+
+  // Helper: safe add/subtract for matrix
+  const addToLoc = (mat, loc, scale) => {
+    const out = structuredClone(mat);
+    for (const [sz, qty] of Object.entries(scale)) {
+      out[loc][sz] = Number(out?.[loc]?.[sz] ?? 0) + Number(qty ?? 0);
     }
-  } else {
-    const sink = locations[0];
-    for (const s of ["XS", "S", "M", "L", "XL"]) {
-      built[sink][s] = Number(built[sink][s] ?? 0) + Number(inv[s] ?? 0);
-    }
-  }
-
-  // ---- XXS DISTRIBUTION RULE ----
-  // Allocate XXS "like XL": give each location up to its XL count, then leftover to Warehouse.
-  let xxsLeft = xxsBuy;
-
-  // Use XL distribution as template
-  const locOrderForXXS = [
-    "Cedarhurst",
-    "Bogota",
-    "Toms River",
-    "Teaneck Store",
-    "Warehouse",
-    "Office"
-  ].filter((l) => locations.includes(l));
-
-  // First pass: match XL per location
-  const xlByLoc = {};
-  for (const loc of locOrderForXXS) xlByLoc[loc] = Number(built?.[loc]?.["XL"] ?? 0);
-
-  for (const loc of locOrderForXXS) {
-    if (xxsLeft <= 0) break;
-    const want = xlByLoc[loc] || 0;
-    const give = Math.min(xxsLeft, want);
-    if (give > 0) {
-      built[loc]["XXS"] = Number(built?.[loc]?.["XXS"] ?? 0) + give;
-      xxsLeft -= give;
-    }
-  }
-
-  // Leftover XXS goes to Warehouse (or first location)
-  if (xxsLeft > 0) {
-    if (locations.includes("Warehouse")) {
-      built["Warehouse"]["XXS"] = Number(built?.["Warehouse"]?.["XXS"] ?? 0) + xxsLeft;
-    } else {
-      const sink = locations[0];
-      built[sink]["XXS"] = Number(built?.[sink]?.["XXS"] ?? 0) + xxsLeft;
-    }
-  }
-
-  // Ignore Teaneck → Warehouse
-  if (ignoreTeaneck && locations.includes("Teaneck Store") && locations.includes("Warehouse")) {
-    for (const s of sizes) {
-      const tn = Number(built?.["Teaneck Store"]?.[s] ?? 0);
-      if (tn) {
-        built["Warehouse"][s] = Number(built["Warehouse"][s] ?? 0) + tn;
-        built["Teaneck Store"][s] = 0;
-      }
-    }
-  }
-
-  // Broken-size rule: skip store if 0 Smalls OR missing 2+ sizes
-  const shouldSkipLocationForBrokenSizes = (rowBySize) => {
-    if (Number(rowBySize?.["S"] ?? 0) === 0) return true;
-    const missingCount = sizes.reduce((acc, sz) => acc + (Number(rowBySize?.[sz] ?? 0) === 0 ? 1 : 0), 0);
-    return missingCount >= 2;
+    return out;
   };
 
-  if (locations.includes("Warehouse")) {
-    const candidateStores = ["Bogota", "Cedarhurst", "Toms River", "Teaneck Store"].filter((l) => locations.includes(l));
-    for (const loc of candidateStores) {
-      if (!built?.[loc]) continue;
-      if (!shouldSkipLocationForBrokenSizes(built[loc])) continue;
+  const canBuildFull = (pool, scale) => computeMaxPacksAvailable(pool, scale) >= 1;
 
-      for (const s of sizes) {
-        const qty = Number(built[loc][s] ?? 0);
-        if (qty) {
-          built["Warehouse"][s] = Number(built["Warehouse"][s] ?? 0) + qty;
-          built[loc][s] = 0;
+  // A) “Starter” pack allowed only if:
+  // - it is that store’s FIRST pack
+  // - it includes at least 1 S
+  // - after applying it, at most ONE size in that store row is 0
+  // We implement a conservative starter pack: 1 unit in as many sizes as possible, with S required.
+  const buildStarterPack = (pool, useXXS) => {
+    const relevant = useXXS ? ["XXS", "XS", "S", "M", "L", "XL"] : ["XS", "S", "M", "L", "XL"];
+
+    // Must have at least 1 Small
+    if (Number(pool["S"] ?? 0) < 1) return null;
+
+    const pack = {};
+    for (const sz of relevant) pack[sz] = 0;
+
+    // Give 1 S for sure
+    pack["S"] = 1;
+
+    // Try to give 1 in other sizes to avoid zeros (priority: XS,M,L,XL,XXS last)
+    const fillOrder = useXXS ? ["XS", "M", "L", "XL", "XXS"] : ["XS", "M", "L", "XL"];
+    for (const sz of fillOrder) {
+      if (Number(pool?.[sz] ?? 0) > 0) pack[sz] = 1;
+    }
+
+    // We allow at most one size to be 0 *within relevant sizes*
+    const zeros = relevant.reduce((acc, sz) => acc + (pack[sz] === 0 ? 1 : 0), 0);
+    if (zeros > 1) return null;
+
+    // Also must not exceed pool
+    for (const sz of relevant) {
+      if (pack[sz] > Number(pool?.[sz] ?? 0)) return null;
+    }
+
+    return pack;
+  };
+
+  // Track whether a store has received any pack yet
+  const packsReceived = Object.fromEntries(locations.map((l) => [l, 0]));
+
+  let built = built0;
+
+  // D) Allocate packs only up to 15 sequence slots; after that, dump remainder to Warehouse.
+  for (let i = 0; i < PACK_SEQUENCE_1_TO_15.length; i++) {
+    const loc = PACK_SEQUENCE_1_TO_15[i];
+    if (!locations.includes(loc)) continue; // skip if location not present
+
+    // Choose pack type:
+    // C) If product has XXS:
+    //   - Prefer full 11-pack if possible
+    //   - If not possible (often because XXS ran out or another size short), try full 10-pack
+    // B) XXS shortage must never stop next pack if a 10-pack is still possible
+    let scaleToUse = null;
+    let usingXXS = false;
+
+    if (productHasXXS && canBuildFull(inv, PACK_WITH_XXS)) {
+      scaleToUse = PACK_WITH_XXS;
+      usingXXS = true;
+    } else if (canBuildFull(inv, PACK_NO_XXS)) {
+      scaleToUse = PACK_NO_XXS;
+      usingXXS = false;
+    }
+
+    if (scaleToUse) {
+      // Allocate full pack
+      built = addToLoc(built, loc, scaleToUse);
+      inv = subtractPack(inv, scaleToUse, 1);
+      packsReceived[loc] += 1;
+      continue;
+    }
+
+    // A) No full pack possible. Consider a starter pack ONLY if this is store's first pack.
+    // Also, starter must satisfy: includes >=1S and leaves at most one size 0 in the pack.
+    if (packsReceived[loc] === 0) {
+      // If product has XXS, try a starter that includes XXS if available; otherwise do without XXS
+      const starter =
+        (productHasXXS ? buildStarterPack(inv, true) : null) ||
+        buildStarterPack(inv, false);
+
+      if (starter) {
+        built = addToLoc(built, loc, starter);
+
+        // subtract starter from inv
+        const nextInv = { ...inv };
+        for (const [sz, qty] of Object.entries(starter)) {
+          nextInv[sz] = Math.max(0, Number(nextInv?.[sz] ?? 0) - Number(qty ?? 0));
         }
+        inv = nextInv;
+
+        packsReceived[loc] += 1;
+        continue;
       }
+    }
+
+    // Otherwise stop pack distribution: remainder is "too broken"
+    break;
+  }
+
+  // D) After pack distribution, EVERYTHING remaining goes to Warehouse (loose units)
+  const sink = locations.includes("Warehouse") ? "Warehouse" : locations[0];
+  for (const s of sizes) {
+    built[sink][s] = Number(built?.[sink]?.[s] ?? 0) + Number(inv?.[s] ?? 0);
+  }
+
+  // Add ship overage (ship>buy) to Warehouse as well
+  if (locations.includes("Warehouse")) {
+    for (const s of sizes) {
+      built["Warehouse"][s] = Number(built?.["Warehouse"]?.[s] ?? 0) + Number(overage?.[s] ?? 0);
+    }
+  } else {
+    for (const s of sizes) {
+      built[sink][s] = Number(built?.[sink]?.[s] ?? 0) + Number(overage?.[s] ?? 0);
     }
   }
 
-  // Office gets 1 XS + 1 S LAST: pull from Warehouse then Bogota
-  if (locations.includes("Office")) {
-    if (!built["Office"]) built["Office"] = {};
-    for (const s of sizes) if (built["Office"][s] == null) built["Office"][s] = 0;
-
-    const takeFrom = (loc, size, qty) => {
-      const have = Number(built?.[loc]?.[size] ?? 0);
-      const take = Math.min(have, qty);
-      if (take > 0) {
-        built[loc][size] = have - take;
-        built["Office"][size] = Number(built["Office"][size] ?? 0) + take;
-      }
-      return take;
+  // E) Office units always pulled from Bogota: 1 XS + 1 S (if possible)
+  if (locations.includes("Office") && locations.includes("Bogota")) {
+    const pull = (size) => {
+      const have = Number(built?.["Bogota"]?.[size] ?? 0);
+      if (have <= 0) return;
+      built["Bogota"][size] = have - 1;
+      built["Office"][size] = Number(built?.["Office"]?.[size] ?? 0) + 1;
     };
-
-    const takeOne = (size) => {
-      let remaining = 1;
-      if (remaining > 0 && locations.includes("Warehouse")) remaining -= takeFrom("Warehouse", size, remaining);
-      if (remaining > 0 && locations.includes("Bogota")) remaining -= takeFrom("Bogota", size, remaining);
-    };
-
-    takeOne("XS");
-    takeOne("S");
+    pull("XS");
+    pull("S");
   }
 
-  // ---- HARD RULE: NEVER ALLOCATE MORE THAN SHIPPED ----
-  // If alloc > ship for a size, remove from: Warehouse → Teaneck → Toms (then others as fallback)
-  const removalOrder = [
-    "Warehouse",
-    "Teaneck Store",
-    "Toms River",
-    "Bogota",
-    "Cedarhurst",
-    "Office"
-  ].filter((l) => locations.includes(l));
+  // Safety: never exceed shipped totals per size (should already be true due to avail=min,
+  // but overage addition could push above ship if data is weird; clamp just in case).
+  // If excess exists, remove from Warehouse then Teaneck then Toms.
+  const removalOrder = ["Warehouse", "Teaneck Store", "Toms River", "Bogota", "Cedarhurst", "Office"].filter((l) =>
+    locations.includes(l)
+  );
 
   for (const s of sizes) {
-    const allocatedTotal = locations.reduce((a, loc) => a + Number(built?.[loc]?.[s] ?? 0), 0);
-    const shippedTotal = Number(ship?.[s] ?? 0);
+    const totalAllocated = locations.reduce((a, loc) => a + Number(built?.[loc]?.[s] ?? 0), 0);
+    const cap = Number(ship?.[s] ?? 0);
+    if (totalAllocated <= cap) continue;
 
-    if (allocatedTotal > shippedTotal) {
-      let excess = allocatedTotal - shippedTotal;
-
-      for (const loc of removalOrder) {
-        if (excess <= 0) break;
-        const have = Number(built?.[loc]?.[s] ?? 0);
-        const take = Math.min(have, excess);
-        if (take > 0) {
-          built[loc][s] = have - take;
-          excess -= take;
-        }
-      }
-    } else if (allocatedTotal < shippedTotal) {
-      const need = shippedTotal - allocatedTotal;
-      if (locations.includes("Warehouse")) {
-        built["Warehouse"][s] = Number(built?.["Warehouse"]?.[s] ?? 0) + need;
-      } else {
-        const sink = locations[0];
-        built[sink][s] = Number(built?.[sink]?.[s] ?? 0) + need;
+    let excess = totalAllocated - cap;
+    for (const loc of removalOrder) {
+      if (excess <= 0) break;
+      const have = Number(built?.[loc]?.[s] ?? 0);
+      const take = Math.min(have, excess);
+      if (take > 0) {
+        built[loc][s] = have - take;
+        excess -= take;
       }
     }
   }
 
   setAlloc(built);
-  setStatus(
-    `Auto Allocated ✅ Grid=${gridTotal} (XXS excluded); XXS allocated like XL; never exceeds Ship; Ignore Teaneck ${ignoreTeaneck ? "ON" : "OFF"}`
-  );
+  setStatus("Auto Allocated ✅ Pack-sequence allocator (A–F) applied.");
 }
-
-
 
 
   // ---------- Mode 2: Save Allocation ----------
