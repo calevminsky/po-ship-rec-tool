@@ -39,13 +39,23 @@ const STORE_PACK_PRIORITY = ["Cedarhurst", "Bogota", "Toms River", "Teaneck Stor
 // Pack plan “shape”. These are examples and can be tuned.
 // Key is buy total (after office XS removed is effectively handled automatically).
 const PACK_PLAN_NO_XXS = [
-  { minTotal: 140, packs: { Bogota: 3, Cedarhurst: 4, "Toms River": 2, "Teaneck Store": 1 } },
-  { minTotal: 120, packs: { Bogota: 3, Cedarhurst: 4, "Toms River": 2, "Teaneck Store": 1 } },
-  { minTotal: 100, packs: { Bogota: 2, Cedarhurst: 4, "Toms River": 2, "Teaneck Store": 1 } },
-  { minTotal: 80, packs: { Bogota: 2, Cedarhurst: 3, "Toms River": 2, "Teaneck Store": 1 } },
-  { minTotal: 70, packs: { Bogota: 2, Cedarhurst: 3, "Toms River": 1, "Teaneck Store": 1 } }, // ✅ NEW
-  { minTotal: 60, packs: { Bogota: 2, Cedarhurst: 2, "Toms River": 1, "Teaneck Store": 1 } }
+  { minTotal: 200, packs: { Bogota: 4, Cedarhurst: 5, "Toms River": 2, "Teaneck Store": 1, Warehouse: 8 } },
+  { minTotal: 190, packs: { Bogota: 4, Cedarhurst: 5, "Toms River": 2, "Teaneck Store": 1, Warehouse: 7 } },
+  { minTotal: 180, packs: { Bogota: 4, Cedarhurst: 5, "Toms River": 2, "Teaneck Store": 1, Warehouse: 6 } },
+  { minTotal: 170, packs: { Bogota: 4, Cedarhurst: 5, "Toms River": 2, "Teaneck Store": 1, Warehouse: 5 } },
+  { minTotal: 160, packs: { Bogota: 4, Cedarhurst: 5, "Toms River": 2, "Teaneck Store": 1, Warehouse: 4 } },
+  { minTotal: 150, packs: { Bogota: 4, Cedarhurst: 5, "Toms River": 2, "Teaneck Store": 1, Warehouse: 3 } },
+  { minTotal: 140, packs: { Bogota: 4, Cedarhurst: 5, "Toms River": 2, "Teaneck Store": 1, Warehouse: 2 } },
+  { minTotal: 130, packs: { Bogota: 4, Cedarhurst: 5, "Toms River": 2, "Teaneck Store": 1, Warehouse: 1 } },
+  { minTotal: 120, packs: { Bogota: 4, Cedarhurst: 5, "Toms River": 2, "Teaneck Store": 1, Warehouse: 0 } },
+  { minTotal: 110, packs: { Bogota: 3, Cedarhurst: 5, "Toms River": 2, "Teaneck Store": 1, Warehouse: 0 } },
+  { minTotal: 100, packs: { Bogota: 3, Cedarhurst: 4, "Toms River": 2, "Teaneck Store": 1, Warehouse: 0 } },
+  { minTotal: 90,  packs: { Bogota: 3, Cedarhurst: 3, "Toms River": 2, "Teaneck Store": 1, Warehouse: 0 } },
+  { minTotal: 80,  packs: { Bogota: 3, Cedarhurst: 3, "Toms River": 1, "Teaneck Store": 1, Warehouse: 0 } },
+  { minTotal: 70,  packs: { Bogota: 2, Cedarhurst: 3, "Toms River": 1, "Teaneck Store": 1, Warehouse: 0 } },
+  { minTotal: 60,  packs: { Bogota: 2, Cedarhurst: 2, "Toms River": 1, "Teaneck Store": 1, Warehouse: 0 } }
 ];
+
 
 
 const PACK_PLAN_WITH_XXS = [
@@ -158,14 +168,15 @@ function addPackToMatrix(matrix, loc, packScale, packsCount = 1) {
   return out;
 }
 
-function pickPlan(total, hasXXS) {
-  const plans = hasXXS ? PACK_PLAN_WITH_XXS : PACK_PLAN_NO_XXS;
-  const FUDGE = 2; // "within a couple of units"
+function pickPlan(total) {
+  const plans = PACK_PLAN_NO_XXS;
+  const FUDGE = 2; // within a couple units (79 uses the 80 grid)
   for (const p of plans) {
     if (total >= (p.minTotal - FUDGE)) return p.packs;
   }
   return plans[plans.length - 1]?.packs || {};
 }
+
 
 
 export default function App() {
@@ -446,32 +457,31 @@ function onAutoAllocate() {
 
   const nextAlloc = emptyMatrix(locations, sizes);
 
-  // Base is BUY totals (DO NOT subtract Office before planning/packs)
+  // BUY totals
   const buy = {};
   for (const s of sizes) buy[s] = Number(selected?.buy?.[s] ?? 0);
 
-  // Overage = ship - buy goes to Warehouse (per size)
+  // SHIP totals (must never exceed these)
   const ship = { ...shipTotalsBySize };
-  const overage = {};
-  for (const s of sizes) {
-    const diff = Number(ship?.[s] ?? 0) - Number(buy?.[s] ?? 0);
-    overage[s] = diff > 0 ? diff : 0;
-  }
 
-  // Pack mode determined from BUY (not office-adjusted)
-  const hasXXS = Number(buy.XXS ?? 0) > 0;
-  const packScale = hasXXS ? PACK_WITH_XXS : PACK_NO_XXS;
-
-  // Pick plan based on FULL BUY total (with your FUDGE already in pickPlan)
+  // ---- GRID SELECTION RULE FOR XXS ----
+  // If XXS exists, choose plan based on total excluding XXS
   const totalBuy = sizes.reduce((a, s) => a + Number(buy?.[s] ?? 0), 0);
-  const plan = pickPlan(totalBuy, hasXXS);
+  const xxsBuy = Number(buy?.["XXS"] ?? 0);
+  const gridTotal = Math.max(0, totalBuy - xxsBuy);
 
-  // Allocate packs to stores, but limited by size availability
-  let inv = { ...buy };
+  const plan = pickPlan(gridTotal);
+
+  // Packs are XS-XL only (10 pack)
+  const packScale = PACK_NO_XXS;
+
+  // Inventory used for pack building: ignore XXS
+  let inv = { ...buy, XXS: 0 };
 
   const stores = Object.keys(plan || {});
   const desiredPacks = { ...plan };
 
+  // Distribute packs (limited by size availability)
   const maxPossiblePacks = computeMaxPacksAvailable(inv, packScale);
 
   const priority = STORE_PACK_PRIORITY.filter((s) => stores.includes(s));
@@ -504,7 +514,7 @@ function onAutoAllocate() {
     if (!gaveAny) break;
   }
 
-  // Apply packs to matrix
+  // Apply packs
   let built = nextAlloc;
   for (const store of stores) {
     const count = Number(packsGiven[store] ?? 0);
@@ -512,37 +522,68 @@ function onAutoAllocate() {
     built = addPackToMatrix(built, store, packScale, count);
   }
 
-  // Leftover BUY inventory goes to Warehouse
+  // Leftover XS-XL inventory goes to Warehouse
   if (locations.includes("Warehouse")) {
-    for (const s of sizes) {
+    for (const s of ["XS", "S", "M", "L", "XL"]) {
       built["Warehouse"][s] = Number(built["Warehouse"][s] ?? 0) + Number(inv[s] ?? 0);
     }
   } else {
     const sink = locations[0];
-    for (const s of sizes) {
+    for (const s of ["XS", "S", "M", "L", "XL"]) {
       built[sink][s] = Number(built[sink][s] ?? 0) + Number(inv[s] ?? 0);
     }
   }
 
-  // Add SHIP overage to Warehouse as well
-  if (locations.includes("Warehouse")) {
-    for (const s of sizes) {
-      built["Warehouse"][s] = Number(built["Warehouse"][s] ?? 0) + Number(overage[s] ?? 0);
+  // ---- XXS DISTRIBUTION RULE ----
+  // Allocate XXS "like XL": give each location up to its XL count, then leftover to Warehouse.
+  let xxsLeft = xxsBuy;
+
+  // Use XL distribution as template
+  const locOrderForXXS = [
+    "Cedarhurst",
+    "Bogota",
+    "Toms River",
+    "Teaneck Store",
+    "Warehouse",
+    "Office"
+  ].filter((l) => locations.includes(l));
+
+  // First pass: match XL per location
+  const xlByLoc = {};
+  for (const loc of locOrderForXXS) xlByLoc[loc] = Number(built?.[loc]?.["XL"] ?? 0);
+
+  for (const loc of locOrderForXXS) {
+    if (xxsLeft <= 0) break;
+    const want = xlByLoc[loc] || 0;
+    const give = Math.min(xxsLeft, want);
+    if (give > 0) {
+      built[loc]["XXS"] = Number(built?.[loc]?.["XXS"] ?? 0) + give;
+      xxsLeft -= give;
     }
   }
 
-  // Ignore Teaneck move → Warehouse
+  // Leftover XXS goes to Warehouse (or first location)
+  if (xxsLeft > 0) {
+    if (locations.includes("Warehouse")) {
+      built["Warehouse"]["XXS"] = Number(built?.["Warehouse"]?.["XXS"] ?? 0) + xxsLeft;
+    } else {
+      const sink = locations[0];
+      built[sink]["XXS"] = Number(built?.[sink]?.["XXS"] ?? 0) + xxsLeft;
+    }
+  }
+
+  // Ignore Teaneck → Warehouse
   if (ignoreTeaneck && locations.includes("Teaneck Store") && locations.includes("Warehouse")) {
     for (const s of sizes) {
       const tn = Number(built?.["Teaneck Store"]?.[s] ?? 0);
-      if (tn !== 0) {
+      if (tn) {
         built["Warehouse"][s] = Number(built["Warehouse"][s] ?? 0) + tn;
         built["Teaneck Store"][s] = 0;
       }
     }
   }
 
-  // Broken-size rule: skip store if 0 Smalls OR missing 2+ sizes entirely
+  // Broken-size rule: skip store if 0 Smalls OR missing 2+ sizes
   const shouldSkipLocationForBrokenSizes = (rowBySize) => {
     if (Number(rowBySize?.["S"] ?? 0) === 0) return true;
     const missingCount = sizes.reduce((acc, sz) => acc + (Number(rowBySize?.[sz] ?? 0) === 0 ? 1 : 0), 0);
@@ -590,11 +631,50 @@ function onAutoAllocate() {
     takeOne("S");
   }
 
+  // ---- HARD RULE: NEVER ALLOCATE MORE THAN SHIPPED ----
+  // If alloc > ship for a size, remove from: Warehouse → Teaneck → Toms (then others as fallback)
+  const removalOrder = [
+    "Warehouse",
+    "Teaneck Store",
+    "Toms River",
+    "Bogota",
+    "Cedarhurst",
+    "Office"
+  ].filter((l) => locations.includes(l));
+
+  for (const s of sizes) {
+    const allocatedTotal = locations.reduce((a, loc) => a + Number(built?.[loc]?.[s] ?? 0), 0);
+    const shippedTotal = Number(ship?.[s] ?? 0);
+
+    if (allocatedTotal > shippedTotal) {
+      let excess = allocatedTotal - shippedTotal;
+
+      for (const loc of removalOrder) {
+        if (excess <= 0) break;
+        const have = Number(built?.[loc]?.[s] ?? 0);
+        const take = Math.min(have, excess);
+        if (take > 0) {
+          built[loc][s] = have - take;
+          excess -= take;
+        }
+      }
+    } else if (allocatedTotal < shippedTotal) {
+      const need = shippedTotal - allocatedTotal;
+      if (locations.includes("Warehouse")) {
+        built["Warehouse"][s] = Number(built?.["Warehouse"]?.[s] ?? 0) + need;
+      } else {
+        const sink = locations[0];
+        built[sink][s] = Number(built?.[sink]?.[s] ?? 0) + need;
+      }
+    }
+  }
+
   setAlloc(built);
   setStatus(
-    `Auto Allocated ✅ Packs (${hasXXS ? "11" : "10"}) based on BUY; Overage→Warehouse; Ignore Teaneck ${ignoreTeaneck ? "ON" : "OFF"}`
+    `Auto Allocated ✅ Grid=${gridTotal} (XXS excluded); XXS allocated like XL; never exceeds Ship; Ignore Teaneck ${ignoreTeaneck ? "ON" : "OFF"}`
   );
 }
+
 
 
 
