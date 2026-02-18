@@ -11,7 +11,7 @@ import {
   adjustInventoryQuantities,
   searchProductsByTitle // NEW
 } from "./shopify.js";
-import { buildCloseoutPdf } from "./pdf.js";
+import { buildCloseoutPdf, buildAllocationPdf } from "./pdf.js";
 
 import { buildAuthorizeUrl, exchangeCodeForToken, makeState } from "./shopifyAuth.js";
 import { setShopifyAccessToken, hasShopifyAccessToken, getShopifyAccessToken } from "./shopifyTokenStore.js";
@@ -334,6 +334,32 @@ app.post("/api/closeout", requireAuth, async (req, res) => {
     res.status(500).json({ error: e.message || "Closeout error" });
   }
 });
+app.post("/api/allocation-pdf", requireAuth, async (req, res) => {
+  try {
+    const { po, productLabel, sizes, locations, allocation } = req.body || {};
+
+    if (!po) return res.status(400).json({ error: "Missing po" });
+    if (!productLabel) return res.status(400).json({ error: "Missing productLabel" });
+    if (!Array.isArray(sizes) || !sizes.length) return res.status(400).json({ error: "Missing sizes" });
+    if (!Array.isArray(locations) || !locations.length) return res.status(400).json({ error: "Missing locations" });
+    if (typeof allocation !== "object" || !allocation) return res.status(400).json({ error: "Missing allocation" });
+
+    const pdfBuffer = await buildAllocationPdf({
+      po,
+      productLabel,
+      sizes,
+      locations,
+      allocation
+    });
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="allocation_${po}.pdf"`);
+    res.send(pdfBuffer);
+  } catch (e) {
+    res.status(500).json({ error: e.message || "Allocation PDF error" });
+  }
+});
+
 
 // Debug route (kept)
 app.get("/api/shopify/debug-locations", requireAuth, async (req, res) => {
