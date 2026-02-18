@@ -486,16 +486,13 @@ if (locations.includes("Warehouse")) {
 }
 
 
-  // Pack mode determined from BUY (not office-adjusted)
+    // Pack mode determined from BUY (not office-adjusted)
   const hasXXS = Number(buy.XXS ?? 0) > 0;
   const packScale = hasXXS ? PACK_WITH_XXS : PACK_NO_XXS;
 
-  // ✅ Pick plan based on FULL BUY total (Fix B)
+  // Pick plan based on FULL BUY total (with your FUDGE already in pickPlan)
   const totalBuy = sizes.reduce((a, s) => a + Number(buy?.[s] ?? 0), 0);
   const plan = pickPlan(totalBuy, hasXXS);
-
-  // ✅ Do NOT remove Teaneck from plan (Fix C)
-  // We will move Teaneck → Warehouse AFTER allocation if ignoreTeaneck is ON.
 
   // Allocate packs to stores, but limited by size availability
   let inv = { ...buy };
@@ -503,19 +500,14 @@ if (locations.includes("Warehouse")) {
   const stores = Object.keys(plan || {});
   const desiredPacks = { ...plan };
 
-  // Determine max packs we can make from inventory
   const maxPossiblePacks = computeMaxPacksAvailable(inv, packScale);
 
-  // Priority order for distributing limited packs
   const priority = STORE_PACK_PRIORITY.filter((s) => stores.includes(s));
-
-  // If priority list doesn't include a store (rare), append it
   for (const s of stores) if (!priority.includes(s)) priority.push(s);
 
   const packsGiven = Object.fromEntries(stores.map((s) => [s, 0]));
   let packsLeftWeCanBuild = maxPossiblePacks;
 
-  // Greedy distribution: one pack at a time following priority, up to desired
   while (packsLeftWeCanBuild > 0) {
     let gaveAny = false;
 
@@ -567,7 +559,7 @@ if (locations.includes("Warehouse")) {
     }
   }
 
-  // ✅ Fix C: If Ignore Teaneck is ON, move Teaneck allocation into Warehouse (not delete from plan)
+  // Ignore Teaneck move → Warehouse
   if (ignoreTeaneck && locations.includes("Teaneck Store") && locations.includes("Warehouse")) {
     for (const s of sizes) {
       const tn = Number(built?.["Teaneck Store"]?.[s] ?? 0);
@@ -578,60 +570,52 @@ if (locations.includes("Warehouse")) {
     }
   }
 
-  // ✅ Fix B: Office XS comes LAST and should not reduce pack-building
-// ✅ Office XS + S comes LAST and should not reduce pack-building
-// Rule: Office gets 1 XS and 1 S always.
-// Source priority: Warehouse first; if not available, Bogota.
-if (locations.includes("Office")) {
-  // Ensure Office row exists
-  if (!built["Office"]) built["Office"] = {};
-  for (const s of sizes) if (built["Office"][s] == null) built["Office"][s] = 0;
-
-  const takeFrom = (loc, size, qty) => {
-    const have = Number(built?.[loc]?.[size] ?? 0);
-    const take = Math.min(have, qty);
-    if (take > 0) {
-      built[loc][size] = have - take;
-      built["Office"][size] = Number(built["Office"][size] ?? 0) + take;
-    }
-    return take;
+  // Broken-size rule: skip store if 0 Smalls OR missing 2+ sizes entirely
+  const shouldSkipLocationForBrokenSizes = (rowBySize) => {
+    if (Number(rowBySize?.["S"] ?? 0) === 0) return true;
+    const missingCount = sizes.reduce((acc, sz) => acc + (Number(rowBySize?.[sz] ?? 0) === 0 ? 1 : 0), 0);
+    return missingCount >= 2;
   };
 
-  const takeOne = (size) => {
-    let remaining = 1;
+  if (locations.includes("Warehouse")) {
+    const candidateStores = ["Bogota", "Cedarhurst", "Toms River", "Teaneck Store"].filter((l) => locations.includes(l));
+    for (const loc of candidateStores) {
+      if (!built?.[loc]) continue;
+      if (!shouldSkipLocationForBrokenSizes(built[loc])) continue;
 
-    // Prefer from Warehouse first
-    if (remaining > 0 && locations.includes("Warehouse")) {
-      remaining -= takeFrom("Warehouse", size, remaining);
-    }
-
-    // If still missing, take from Bogota
-    if (remaining > 0 && locations.includes("Bogota")) {
-      remaining -= takeFrom("Bogota", size, remaining);
-    }
-
-    // If still missing after Bogota, we just can't fulfill it (leave remaining unmet)
-  };
-
-  takeOne("XS");
-  takeOne("S");
-}
-
-
-    // If still missing, take from the store with most XS
-    if (remaining > 0) {
-      const candidateStores = ["Cedarhurst", "Bogota", "Toms River", "Teaneck Store"].filter((l) => locations.includes(l));
-      let best = null;
-      let bestXS = -1;
-      for (const loc of candidateStores) {
-        const haveXS = Number(built?.[loc]?.["XS"] ?? 0);
-        if (haveXS > bestXS) {
-          bestXS = haveXS;
-          best = loc;
+      for (const s of sizes) {
+        const qty = Number(built[loc][s] ?? 0);
+        if (qty) {
+          built["Warehouse"][s] = Number(built["Warehouse"][s] ?? 0) + qty;
+          built[loc][s] = 0;
         }
       }
-      if (best) remaining -= takeFrom(best, "XS", remaining);
     }
+  }
+
+  // Office gets 1 XS + 1 S LAST: pull from Warehouse then Bogota
+  if (locations.includes("Office")) {
+    if (!built["Office"]) built["Office"] = {};
+    for (const s of sizes) if (built["Office"][s] == null) built["Office"][s] = 0;
+
+    const takeFrom = (loc, size, qty) => {
+      const have = Number(built?.[loc]?.[size] ?? 0);
+      const take = Math.min(have, qty);
+      if (take > 0) {
+        built[loc][size] = have - take;
+        built["Office"][size] = Number(built["Office"][size] ?? 0) + take;
+      }
+      return take;
+    };
+
+    const takeOne = (size) => {
+      let remaining = 1;
+      if (remaining > 0 && locations.includes("Warehouse")) remaining -= takeFrom("Warehouse", size, remaining);
+      if (remaining > 0 && locations.includes("Bogota")) remaining -= takeFrom("Bogota", size, remaining);
+    };
+
+    takeOne("XS");
+    takeOne("S");
   }
 
   setAlloc(built);
