@@ -441,7 +441,7 @@ export default function App() {
   }
 
   // ---------- Mode 2: Auto Allocate (pack-based, BUY-based) ----------
-  function onAutoAllocate() {
+function onAutoAllocate() {
   if (!selected) return;
 
   const nextAlloc = emptyMatrix(locations, sizes);
@@ -458,35 +458,7 @@ export default function App() {
     overage[s] = diff > 0 ? diff : 0;
   }
 
-    // ---- Broken-size rule: if a store has 0 Smalls OR is completely missing 2+ sizes,
-// move its allocation to Warehouse (skip that location).
-const shouldSkipLocationForBrokenSizes = (rowBySize) => {
-  // "0 smalls" = size "S" is 0
-  if (Number(rowBySize?.["S"] ?? 0) === 0) return true;
-
-  // "complete missing 2 sizes" = at least 2 sizes have 0
-  const missingCount = sizes.reduce((acc, sz) => acc + (Number(rowBySize?.[sz] ?? 0) === 0 ? 1 : 0), 0);
-  return missingCount >= 2;
-};
-
-if (locations.includes("Warehouse")) {
-  const candidateStores = ["Bogota", "Cedarhurst", "Toms River", "Teaneck Store"].filter((l) => locations.includes(l));
-  for (const loc of candidateStores) {
-    if (!built?.[loc]) continue;
-    if (!shouldSkipLocationForBrokenSizes(built[loc])) continue;
-
-    for (const s of sizes) {
-      const qty = Number(built[loc][s] ?? 0);
-      if (qty) {
-        built["Warehouse"][s] = Number(built["Warehouse"][s] ?? 0) + qty;
-        built[loc][s] = 0;
-      }
-    }
-  }
-}
-
-
-    // Pack mode determined from BUY (not office-adjusted)
+  // Pack mode determined from BUY (not office-adjusted)
   const hasXXS = Number(buy.XXS ?? 0) > 0;
   const packScale = hasXXS ? PACK_WITH_XXS : PACK_NO_XXS;
 
@@ -623,6 +595,7 @@ if (locations.includes("Warehouse")) {
     `Auto Allocated ✅ Packs (${hasXXS ? "11" : "10"}) based on BUY; Overage→Warehouse; Ignore Teaneck ${ignoreTeaneck ? "ON" : "OFF"}`
   );
 }
+
 
 
   // ---------- Mode 2: Save Allocation ----------
