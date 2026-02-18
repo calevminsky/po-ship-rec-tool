@@ -12,7 +12,8 @@ import {
   shopifyByProductId,
   shopifySearchByTitle,
   linkShopifyProduct,
-  closeoutPdf
+  closeoutPdf,
+  allocationPdf
 } from "./api.js";
 
 /**
@@ -665,6 +666,49 @@ if (locations.includes("Office")) {
       setLoading(false);
     }
   }
+async function onSubmitAllocationAndDownloadPdf() {
+  if (!selectedId || !selected) return;
+
+  if (!allocMatchesShip) {
+    const ok = window.confirm("Allocation does NOT match Ship Units.\n\nSubmit + PDF anyway?");
+    if (!ok) return;
+  }
+
+  try {
+    setLoading(true);
+    setStatus("Submitting allocation… Generating Allocation PDF…");
+
+    // Save allocation first (so Airtable is in sync)
+    await saveAllocation(selectedId, alloc);
+
+    const payload = {
+      recordId: selectedId,
+      po: poData?.po || "",
+      productLabel: selected.label,
+      sizes,
+      locations,
+      allocation: alloc
+    };
+
+    const pdfBlob = await allocationPdf(payload);
+
+    const url = URL.createObjectURL(pdfBlob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `allocation_${poData?.po || "PO"}_${Date.now()}.pdf`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+
+    setStatus("Allocation submitted ✅ Allocation PDF downloaded.");
+  } catch (e) {
+    setStatus(`Allocation submit/PDF failed: ${e.message}`);
+  } finally {
+    setLoading(false);
+  }
+}
+
 
   // ---------- Shopify: Link by barcode ----------
   async function onLinkShopifyAndPersist() {
@@ -1235,6 +1279,14 @@ if (locations.includes("Office")) {
                       <button className="btn primary" onClick={onSaveAllocation} disabled={loading || !selectedId} type="button">
                         Submit Allocation
                       </button>
+                      <button
+  className="btn primary"
+  onClick={onSubmitAllocationAndDownloadPdf}
+  disabled={loading || !selectedId}
+>
+  Submit + Download Allocation PDF
+</button>
+
                     </div>
                   </>
                 ) : null}
