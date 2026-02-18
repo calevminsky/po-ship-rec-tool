@@ -84,7 +84,7 @@ export async function shopifyByProductId(productId) {
   return j;
 }
 
-// ✅ NEW: search products by title (for manual select)
+// Search products by title (for manual select)
 export async function shopifySearchByTitle(title) {
   const r = await fetch(`/api/shopify/search?title=${encodeURIComponent(title)}`);
   const j = await r.json();
@@ -140,4 +140,3 @@ export async function allocationPdf(payload) {
 
   return await r.blob();
 }
-
