@@ -121,3 +121,23 @@ export async function closeoutPdf(payload) {
 
   return await r.blob();
 }
+
+export async function allocationPdf(payload) {
+  const r = await fetch("/api/allocation-pdf", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+
+  if (!r.ok) {
+    let msg = "Allocation PDF failed";
+    try {
+      const j = await r.json();
+      msg = j.error || msg;
+    } catch {}
+    throw new Error(msg);
+  }
+
+  return await r.blob();
+}
+
