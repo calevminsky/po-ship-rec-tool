@@ -41,7 +41,7 @@ const PACK_PLAN_NO_XXS = [
   { minTotal: 140, packs: { Bogota: 3, Cedarhurst: 4, "Toms River": 2, "Teaneck Store": 1 } },
   { minTotal: 120, packs: { Bogota: 3, Cedarhurst: 4, "Toms River": 2, "Teaneck Store": 1 } },
   { minTotal: 100, packs: { Bogota: 2, Cedarhurst: 4, "Toms River": 2, "Teaneck Store": 1 } },
-  { minTotal: 80, packs: { Bogota: 2, Cedarhurst: 3, "Toms River": 1, "Teaneck Store": 2 } },
+  { minTotal: 80, packs: { Bogota: 2, Cedarhurst: 3, "Toms River": 2, "Teaneck Store": 1 } },
   { minTotal: 70, packs: { Bogota: 2, Cedarhurst: 3, "Toms River": 1, "Teaneck Store": 1 } }, // ✅ NEW
   { minTotal: 60, packs: { Bogota: 2, Cedarhurst: 2, "Toms River": 1, "Teaneck Store": 1 } }
 ];
@@ -159,11 +159,13 @@ function addPackToMatrix(matrix, loc, packScale, packsCount = 1) {
 
 function pickPlan(total, hasXXS) {
   const plans = hasXXS ? PACK_PLAN_WITH_XXS : PACK_PLAN_NO_XXS;
+  const FUDGE = 2; // "within a couple of units"
   for (const p of plans) {
-    if (total >= p.minTotal) return p.packs;
+    if (total >= (p.minTotal - FUDGE)) return p.packs;
   }
   return plans[plans.length - 1]?.packs || {};
 }
+
 
 export default function App() {
   // ---------- AUTH ----------
@@ -455,6 +457,34 @@ export default function App() {
     overage[s] = diff > 0 ? diff : 0;
   }
 
+    // ---- Broken-size rule: if a store has 0 Smalls OR is completely missing 2+ sizes,
+// move its allocation to Warehouse (skip that location).
+const shouldSkipLocationForBrokenSizes = (rowBySize) => {
+  // "0 smalls" = size "S" is 0
+  if (Number(rowBySize?.["S"] ?? 0) === 0) return true;
+
+  // "complete missing 2 sizes" = at least 2 sizes have 0
+  const missingCount = sizes.reduce((acc, sz) => acc + (Number(rowBySize?.[sz] ?? 0) === 0 ? 1 : 0), 0);
+  return missingCount >= 2;
+};
+
+if (locations.includes("Warehouse")) {
+  const candidateStores = ["Bogota", "Cedarhurst", "Toms River", "Teaneck Store"].filter((l) => locations.includes(l));
+  for (const loc of candidateStores) {
+    if (!built?.[loc]) continue;
+    if (!shouldSkipLocationForBrokenSizes(built[loc])) continue;
+
+    for (const s of sizes) {
+      const qty = Number(built[loc][s] ?? 0);
+      if (qty) {
+        built["Warehouse"][s] = Number(built["Warehouse"][s] ?? 0) + qty;
+        built[loc][s] = 0;
+      }
+    }
+  }
+}
+
+
   // Pack mode determined from BUY (not office-adjusted)
   const hasXXS = Number(buy.XXS ?? 0) > 0;
   const packScale = hasXXS ? PACK_WITH_XXS : PACK_NO_XXS;
@@ -548,27 +578,44 @@ export default function App() {
   }
 
   // ✅ Fix B: Office XS comes LAST and should not reduce pack-building
-  if (locations.includes("Office")) {
-    // Ensure Office row exists
-    if (!built["Office"]) built["Office"] = {};
-    for (const s of sizes) if (built["Office"][s] == null) built["Office"][s] = 0;
+// ✅ Office XS + S comes LAST and should not reduce pack-building
+// Rule: Office gets 1 XS and 1 S always.
+// Source priority: Warehouse first; if not available, Bogota.
+if (locations.includes("Office")) {
+  // Ensure Office row exists
+  if (!built["Office"]) built["Office"] = {};
+  for (const s of sizes) if (built["Office"][s] == null) built["Office"][s] = 0;
 
-    const takeFrom = (loc, size, qty) => {
-      const have = Number(built?.[loc]?.[size] ?? 0);
-      const take = Math.min(have, qty);
-      if (take > 0) {
-        built[loc][size] = have - take;
-        built["Office"][size] = Number(built["Office"][size] ?? 0) + take;
-      }
-      return take;
-    };
+  const takeFrom = (loc, size, qty) => {
+    const have = Number(built?.[loc]?.[size] ?? 0);
+    const take = Math.min(have, qty);
+    if (take > 0) {
+      built[loc][size] = have - take;
+      built["Office"][size] = Number(built["Office"][size] ?? 0) + take;
+    }
+    return take;
+  };
 
+  const takeOne = (size) => {
     let remaining = 1;
 
-    // Prefer from Warehouse XS first (this includes overage + leftovers)
+    // Prefer from Warehouse first
     if (remaining > 0 && locations.includes("Warehouse")) {
-      remaining -= takeFrom("Warehouse", "XS", remaining);
+      remaining -= takeFrom("Warehouse", size, remaining);
     }
+
+    // If still missing, take from Bogota
+    if (remaining > 0 && locations.includes("Bogota")) {
+      remaining -= takeFrom("Bogota", size, remaining);
+    }
+
+    // If still missing after Bogota, we just can't fulfill it (leave remaining unmet)
+  };
+
+  takeOne("XS");
+  takeOne("S");
+}
+
 
     // If still missing, take from the store with most XS
     if (remaining > 0) {
