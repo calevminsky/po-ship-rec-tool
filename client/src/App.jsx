@@ -46,6 +46,7 @@ const PACK_SEQUENCE_1_TO_15 = [
   "Cedarhurst",   // 14
   "Warehouse"     // 15
 ];
+const PACK_CORE_NO_XL = { XS: 3, S: 3, M: 2, L: 1 }; // 9 units (XL optional, XXS optional)
 
 
 const SIZES = ["XXS", "XS", "S", "M", "L", "XL"];
@@ -555,29 +556,38 @@ function onAutoAllocate() {
     const loc = PACK_SEQUENCE_1_TO_15[i];
     if (!locations.includes(loc)) continue; // skip if location not present
 
-    // Choose pack type:
-    // C) If product has XXS:
-    //   - Prefer full 11-pack if possible
-    //   - If not possible (often because XXS ran out or another size short), try full 10-pack
-    // B) XXS shortage must never stop next pack if a 10-pack is still possible
-    let scaleToUse = null;
-    let usingXXS = false;
+    // New rule: XL optional like XXS.
+// We keep allocating as long as the CORE pack can be built.
+// Pack size varies: 9 (core only), +1 XL if available, +1 XXS if product has XXS and available.
 
-    if (productHasXXS && canBuildFull(inv, PACK_WITH_XXS)) {
-      scaleToUse = PACK_WITH_XXS;
-      usingXXS = true;
-    } else if (canBuildFull(inv, PACK_NO_XXS)) {
-      scaleToUse = PACK_NO_XXS;
-      usingXXS = false;
-    }
+const canBuildCore = computeMaxPacksAvailable(inv, PACK_CORE_NO_XL) >= 1;
 
-    if (scaleToUse) {
-      // Allocate full pack
-      built = addToLoc(built, loc, scaleToUse);
-      inv = subtractPack(inv, scaleToUse, 1);
-      packsReceived[loc] += 1;
-      continue;
-    }
+if (canBuildCore) {
+  // Start with core
+  const pack = { ...PACK_CORE_NO_XL };
+
+  // Optional XL
+  if (Number(inv?.XL ?? 0) >= 1) {
+    pack.XL = 1;
+  }
+
+  // Optional XXS (only if product has XXS sizing)
+  if (productHasXXS && Number(inv?.XXS ?? 0) >= 1) {
+    pack.XXS = 1;
+  }
+
+  built = addToLoc(built, loc, pack);
+
+  // Subtract the dynamic pack from inventory
+  const nextInv = { ...inv };
+  for (const [sz, qty] of Object.entries(pack)) {
+    nextInv[sz] = Math.max(0, Number(nextInv?.[sz] ?? 0) - Number(qty ?? 0));
+  }
+  inv = nextInv;
+
+  packsReceived[loc] += 1;
+  continue;
+}
 
     // A) No full pack possible. Consider a starter pack ONLY if this is store's first pack.
     // Also, starter must satisfy: includes >=1S and leaves at most one size 0 in the pack.
