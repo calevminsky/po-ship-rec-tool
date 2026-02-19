@@ -12,7 +12,7 @@ import {
   searchProductsByTitle
 } from "./shopify.js";
 
-import { buildCloseoutPdf, buildAllocationPdf } from "./pdf.js";
+import { buildCloseoutPdf, buildAllocationPdf, buildOfficeSamplesPdf } from "./pdf.js";
 
 import { buildAuthorizeUrl, exchangeCodeForToken, makeState } from "./shopifyAuth.js";
 import { setShopifyAccessToken, hasShopifyAccessToken, getShopifyAccessToken } from "./shopifyTokenStore.js";
@@ -20,7 +20,7 @@ import { setShopifyAccessToken, hasShopifyAccessToken, getShopifyAccessToken } f
 let OAUTH_STATE = null;
 
 const app = express();
-app.use(express.json({ limit: "1mb" }));
+app.use(express.json({ limit: "10mb" }));
 app.use(cookieParser());
 
 const __filename = fileURLToPath(import.meta.url);
@@ -291,7 +291,12 @@ app.post("/api/closeout", requireAuth, async (req, res) => {
       const locMap = new Map(getLocations().map((l) => [l.name, l.id]));
       const changes = [];
 
+      const officeAlreadySent = req.body.officeAlreadySent === true;
+
       for (const loc of locations || []) {
+        // Skip Office Shopify adjustment if office samples were already handled
+        if (officeAlreadySent && loc === "Office") continue;
+
         const locId = locMap.get(loc);
         if (!locId) continue;
 
@@ -366,6 +371,118 @@ app.post("/api/allocation-pdf", requireAuth, async (req, res) => {
     res.send(pdfBuffer);
   } catch (e) {
     res.status(500).json({ error: e.message || "Allocation PDF error" });
+  }
+});
+
+// ---- Office Samples: upload photo to Airtable attachment field ----
+async function uploadPhotoToAirtable(recordId, photoBase64, photoFilename) {
+  if (!photoBase64) return;
+
+  const commaIdx = photoBase64.indexOf(",");
+  const b64 = commaIdx >= 0 ? photoBase64.slice(commaIdx + 1) : photoBase64;
+  const mimeMatch = photoBase64.match(/data:([^;]+);/);
+  const contentType = mimeMatch ? mimeMatch[1] : "image/jpeg";
+  const buffer = Buffer.from(b64, "base64");
+
+  const baseId = process.env.AIRTABLE_BASE_ID;
+  const token = process.env.AIRTABLE_TOKEN;
+  const fieldName = AIRTABLE_FIELDS.OFFICE_SAMPLE_PHOTO_FIELD;
+
+  const url = `https://content.airtable.com/v0/${baseId}/${recordId}/${encodeURIComponent(fieldName)}/uploadAttachment`;
+
+  const form = new FormData();
+  form.append("file", new Blob([buffer], { type: contentType }), photoFilename || "photo.jpg");
+
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    body: form
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => "");
+    throw new Error(`Airtable photo upload failed (${res.status}): ${text}`);
+  }
+  return await res.json();
+}
+
+// ---- Office Samples: submit ----
+app.patch("/api/record/:id/office-sample", requireAuth, async (req, res) => {
+  try {
+    const id = req.params.id;
+    const { inventoryAdjustments, officeSentDate, deliveryDate, photoBase64, photoFilename, currentScanJson, scannedSizes } = req.body || {};
+
+    if (!id) return res.status(400).json({ error: "Missing record id" });
+    if (!Array.isArray(inventoryAdjustments) || !inventoryAdjustments.length)
+      return res.status(400).json({ error: "inventoryAdjustments must be a non-empty array" });
+    if (!officeSentDate) return res.status(400).json({ error: "officeSentDate required" });
+
+    const OFFICE_LOCATION_GID = "gid://shopify/Location/69648253025";
+
+    // 1. Adjust Shopify inventory at Office
+    const changes = inventoryAdjustments.map((adj) => ({
+      inventoryItemId: adj.inventoryItemId,
+      locationId: OFFICE_LOCATION_GID,
+      delta: Number(adj.delta ?? 1)
+    }));
+
+    const shopifyResult = await adjustInventoryQuantities({ name: "available", reason: "received", changes });
+    if (!shopifyResult.ok && !shopifyResult.skipped) {
+      return res.status(400).json({ error: "Shopify inventory adjust failed", shopify: shopifyResult });
+    }
+
+    // 2. Upload photo (non-fatal if it fails)
+    let photoUploadError = null;
+    if (photoBase64) {
+      try {
+        await uploadPhotoToAirtable(id, photoBase64, photoFilename);
+      } catch (e) {
+        photoUploadError = e.message;
+        console.error("Office sample photo upload failed (non-fatal):", e.message);
+      }
+    }
+
+    // 3. Merge scanned sizes into Scan_JSON for the Office location
+    const sizes = Array.isArray(scannedSizes) ? scannedSizes : [];
+    let updatedScanJson = null;
+    if (sizes.length > 0) {
+      let existingScan = {};
+      try {
+        if (currentScanJson) existingScan = JSON.parse(currentScanJson);
+      } catch { existingScan = {}; }
+      if (!existingScan.Office) existingScan.Office = {};
+      for (const size of sizes) {
+        existingScan.Office[size] = Number(existingScan.Office[size] ?? 0) + 1;
+      }
+      updatedScanJson = JSON.stringify(existingScan);
+    }
+
+    // 4. Patch Airtable record
+    const patch = { [AIRTABLE_FIELDS.OFFICE_SENT_FIELD]: officeSentDate };
+    if (deliveryDate) patch[AIRTABLE_FIELDS.DELIVERY_FIELD] = deliveryDate;
+    if (updatedScanJson) patch[AIRTABLE_FIELDS.SCAN_FIELD] = updatedScanJson;
+
+    await updateRecord(id, patch);
+
+    res.json({ ok: true, photoUploadError });
+  } catch (e) {
+    res.status(500).json({ error: e.message || "Office sample submit error" });
+  }
+});
+
+// ---- Office Samples: session PDF ----
+app.post("/api/office-samples/session-pdf", requireAuth, async (req, res) => {
+  try {
+    const { entries, reportDate } = req.body || {};
+    if (!Array.isArray(entries) || !entries.length) return res.status(400).json({ error: "entries required" });
+
+    const pdfBuffer = await buildOfficeSamplesPdf({ entries, reportDate: reportDate || new Date().toLocaleDateString() });
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="office_samples_${reportDate || Date.now()}.pdf"`);
+    res.send(pdfBuffer);
+  } catch (e) {
+    res.status(500).json({ error: e.message || "Session PDF error" });
   }
 });
 
