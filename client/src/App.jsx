@@ -17,6 +17,7 @@ import {
   submitOfficeSample,
   downloadSessionPdf
 } from "./api.js";
+import { computeAllocation } from "./allocationEngine";
 
 // ---- Dynamsoft barcode scanner (Office Samples mode) ----
 const DYNAMSOFT_LICENSE = "DLS2eyJoYW5kc2hha2VDb2RlIjoiMTA0MzEyNTE0LTEwNDQ2Nzg3NCIsIm1haW5TZXJ2ZXJVUkwiOiJodHRwczovL21kbHMuZHluYW1zb2Z0b25saW5lLmNvbS8iLCJvcmdhbml6YXRpb25JRCI6IjEwNDMxMjUxNCIsInN0YW5kYnlTZXJ2ZXJVUkwiOiJodHRwczovL3NkbHMuZHluYW1zb2Z0b25saW5lLmNvbS8iLCJjaGVja0NvZGUiOjE5MzI1NzIzNDd9";
@@ -547,9 +548,6 @@ export default function App() {
   function onAutoAllocate() {
   if (!selected) return;
 
-  const built0 = emptyMatrix(locations, sizes);
-
-  // BUY + SHIP
   const buy = {};
   const ship = {};
   for (const s of sizes) {
@@ -557,150 +555,16 @@ export default function App() {
     ship[s] = Number(shipTotalsBySize?.[s] ?? 0);
   }
 
-  // Available units = min(buy, ship)
-  const avail = {};
-  for (const s of sizes) avail[s] = Math.min(buy[s], ship[s]);
+  const { allocation } = computeAllocation({
+    buy,
+    ship,
+    locations,
+    sizes,
+    ignoreTeaneck
+  });
 
-  // Ship overage (ship > buy) goes to Warehouse (per size)
-  const overage = {};
-  for (const s of sizes) overage[s] = Math.max(0, ship[s] - buy[s]);
-
-  const productHasXXS = Number(buy.XXS ?? 0) > 0 || Number(ship.XXS ?? 0) > 0;
-
-  // Inventory pool we allocate from
-  let inv = { ...avail };
-
-  // Helper: add scale to location
-  const addToLoc = (mat, loc, scale) => {
-    const out = structuredClone(mat);
-    for (const [sz, qty] of Object.entries(scale)) {
-      out[loc][sz] = Number(out?.[loc]?.[sz] ?? 0) + Number(qty ?? 0);
-    }
-    return out;
-  };
-
-  // Build a pack from what's available.
-  // Partial packs allowed EXCEPT first-pack guardrails:
-  // 1) first pack must include at least 1 S
-  // 2) first pack cannot be missing 2 of {XS, M, L} (missing = qty===0)
-  // XL optional (never blocks)
-  // XXS optional (never blocks)
-  const buildPack = (pool, { isFirstPack, productHasXXS }) => {
-    const xs = Math.min(3, Number(pool?.XS ?? 0));
-    const s = Math.min(3, Number(pool?.S ?? 0));
-    const m = Math.min(2, Number(pool?.M ?? 0));
-    const l = Math.min(1, Number(pool?.L ?? 0));
-
-    const xl = Number(pool?.XL ?? 0) >= 1 ? 1 : 0; // optional
-    const xxs = productHasXXS && Number(pool?.XXS ?? 0) >= 1 ? 1 : 0; // optional
-
-    const coreTotal = xs + s + m + l;
-    if (coreTotal <= 0) return null; // prevent "pack" of only XL/XXS
-
-    if (isFirstPack) {
-      if (s === 0) return null; // guardrail #1
-      const missing = (xs === 0 ? 1 : 0) + (m === 0 ? 1 : 0) + (l === 0 ? 1 : 0);
-      if (missing >= 2) return null; // guardrail #2
-    }
-
-    const pack = {};
-    if (xxs) pack.XXS = xxs;
-    if (xs) pack.XS = xs;
-    if (s) pack.S = s;
-    if (m) pack.M = m;
-    if (l) pack.L = l;
-    if (xl) pack.XL = xl;
-
-    return pack;
-  };
-
-  // Track packs received per location
-  const packsReceived = Object.fromEntries(locations.map((l) => [l, 0]));
-  let built = built0;
-  let officeGiven = false;
-
-  // Allocate packs via sequence (1..15)
-  for (let i = 0; i < PACK_SEQUENCE_1_TO_15.length; i++) {
-    let loc = PACK_SEQUENCE_1_TO_15[i];
-
-    // Ignore Teaneck: route that "slot" to Warehouse
-    if (ignoreTeaneck && loc === "Teaneck Store") loc = "Warehouse";
-    if (!locations.includes(loc)) continue;
-
-    const isFirstPack = packsReceived[loc] === 0;
-
-    const pack = buildPack(inv, { isFirstPack, productHasXXS });
-    if (!pack) break;
-
-    // add pack to location
-    built = addToLoc(built, loc, pack);
-
-    // subtract from inv
-    const nextInv = { ...inv };
-    for (const [sz, qty] of Object.entries(pack)) {
-      nextInv[sz] = Math.max(0, Number(nextInv?.[sz] ?? 0) - Number(qty ?? 0));
-    }
-    inv = nextInv;
-
-    packsReceived[loc] += 1;
-
-    // ✅ Office rule: on Bogota FIRST pack, move 1 XS + 1 S from Bogota allocation to Office
-    // (so Office units are explicitly coming out of Bogota inventory)
-    if (!officeGiven && loc === "Bogota" && packsReceived["Bogota"] === 1 && locations.includes("Office")) {
-      const bogXS = Number(built?.Bogota?.XS ?? 0);
-      const bogS = Number(built?.Bogota?.S ?? 0);
-
-      // only do it if Bogota actually has both
-      if (bogXS >= 1 && bogS >= 1) {
-        built.Bogota.XS = bogXS - 1;
-        built.Bogota.S = bogS - 1;
-
-        built.Office.XS = Number(built?.Office?.XS ?? 0) + 1;
-        built.Office.S = Number(built?.Office?.S ?? 0) + 1;
-
-        officeGiven = true;
-      }
-    }
-  }
-
-  // After pack distribution, ALL remaining units go to Warehouse (loose units)
-  const sink = locations.includes("Warehouse") ? "Warehouse" : locations[0];
-  for (const s of sizes) {
-    built[sink][s] = Number(built?.[sink]?.[s] ?? 0) + Number(inv?.[s] ?? 0);
-  }
-
-  // Add ship overage (ship > buy) to Warehouse too
-  for (const s of sizes) {
-    built[sink][s] = Number(built?.[sink]?.[s] ?? 0) + Number(overage?.[s] ?? 0);
-  }
-
-  // Hard safety: never exceed shipped totals per size.
-  // Remove from Warehouse first, then Teaneck, then Toms (then others as last resort).
-  const removalOrder = ["Warehouse", "Teaneck Store", "Toms River", "Bogota", "Cedarhurst", "Office"].filter((l) =>
-    locations.includes(l)
-  );
-
-  for (const s of sizes) {
-    const totalAllocated = locations.reduce((a, loc) => a + Number(built?.[loc]?.[s] ?? 0), 0);
-    const cap = Number(ship?.[s] ?? 0);
-    if (totalAllocated <= cap) continue;
-
-    let excess = totalAllocated - cap;
-    for (const loc of removalOrder) {
-      if (excess <= 0) break;
-      const have = Number(built?.[loc]?.[s] ?? 0);
-      const take = Math.min(have, excess);
-      if (take > 0) {
-        built[loc][s] = have - take;
-        excess -= take;
-      }
-    }
-  }
-
-  setAlloc(built);
-  setStatus(
-    "Auto Allocated ✅ Pack-sequence allocator applied (partial packs allowed; first-pack guardrails; Office XS+S taken from Bogota first pack; IgnoreTeaneck supported)."
-  );
+  setAlloc(allocation);
+  setStatus("Auto Allocated ✅");
 }
 
 
