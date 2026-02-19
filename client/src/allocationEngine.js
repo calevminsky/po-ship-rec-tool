@@ -1,6 +1,9 @@
 // src/allocationEngine.js
 
-// ── Pack distribution: how many packs each location gets in a full 15-pack cycle ──
+// ── Pack sequence (1–15) ─────────────────────────────────────────────────────
+// This defines the distribution ORDER and RATIO of packs across locations.
+// When N full packs can be made from available inventory, we look at the first
+// N entries of this sequence to count how many packs each location receives.
 const PACK_SEQUENCE_1_TO_15 = [
   "Cedarhurst",    // 1
   "Cedarhurst",    // 2
@@ -19,19 +22,17 @@ const PACK_SEQUENCE_1_TO_15 = [
   "Warehouse"      // 15
 ];
 
-// Derive target pack counts from the sequence:
-// { Cedarhurst: 5, Bogota: 4, "Toms River": 2, "Teaneck Store": 1, Warehouse: 3 }
-const PACKS_PER_LOC = PACK_SEQUENCE_1_TO_15.reduce((acc, loc) => {
-  acc[loc] = (acc[loc] || 0) + 1;
-  return acc;
-}, {});
+// ── Pack composition (units per size in one full pack) ───────────────────────
+// A pack without XXS = 10 units;  with XXS = 11 units.
+const PACK_NO_XXS   = { XS: 3, S: 3, M: 2, L: 1, XL: 1 };           // 10
+const PACK_WITH_XXS = { XXS: 1, XS: 3, S: 3, M: 2, L: 1, XL: 1 };   // 11
 
-// Allocation order: fill each location completely before moving to the next.
-// Office is handled separately (not pack-based).
+// ── Allocation order ─────────────────────────────────────────────────────────
+// Office is handled first (fixed 1 XS + 1 S), then stores in this order.
+// Each location is filled completely before moving to the next.
 const ALLOCATION_ORDER = ["Cedarhurst", "Bogota", "Toms River", "Teaneck Store", "Warehouse"];
 
-const CORE_SIZES = ["XS", "S", "M", "L"];
-
+// ── Matrix helpers ───────────────────────────────────────────────────────────
 function emptyMatrix(locations, sizes) {
   const m = {};
   for (const loc of locations) {
@@ -41,53 +42,12 @@ function emptyMatrix(locations, sizes) {
   return m;
 }
 
-function countMissingCoreSizes(inv) {
-  let missing = 0;
-  for (const sz of CORE_SIZES) {
-    if (Number(inv?.[sz] ?? 0) <= 0) missing += 1;
-  }
-  return missing;
-}
-
-function buildPackFromInventory(inv, productHasXXS) {
-  // Pack target: XXS:1 (optional), XS:3, S:3, M:2, L:1, XL:1
-  // Partial packs are allowed — take up to the target based on available inventory.
-  const want = {
-    XXS: productHasXXS ? 1 : 0,
-    XS: 3,
-    S: 3,
-    M: 2,
-    L: 1,
-    XL: 1
-  };
-
-  const pack = {};
-  for (const [sz, qty] of Object.entries(want)) {
-    const have = Number(inv?.[sz] ?? 0);
-    const take = Math.max(0, Math.min(have, qty));
-    if (take > 0) pack[sz] = take;
-  }
-  return pack;
-}
-
-function subtractPack(inv, pack) {
-  const next = { ...inv };
-  for (const [sz, qty] of Object.entries(pack)) {
-    next[sz] = Math.max(0, Number(next?.[sz] ?? 0) - Number(qty ?? 0));
-  }
-  return next;
-}
-
 function addToLoc(matrix, loc, pack) {
   const out = structuredClone(matrix);
   for (const [sz, qty] of Object.entries(pack)) {
     out[loc][sz] = Number(out?.[loc]?.[sz] ?? 0) + Number(qty ?? 0);
   }
   return out;
-}
-
-function sumPack(pack) {
-  return Object.values(pack).reduce((a, v) => a + Number(v ?? 0), 0);
 }
 
 function perSizeTotalsFromMatrix(matrix, locations, sizes) {
@@ -99,7 +59,7 @@ function perSizeTotalsFromMatrix(matrix, locations, sizes) {
 }
 
 function capToShipTotals(built, locations, sizes, ship) {
-  // Hard safety: never exceed shipped totals per size.
+  // Safety cap: total allocated per size must never exceed total shipped per size.
   // Remove excess from: Warehouse → Teaneck → Toms River → Bogota → Cedarhurst → Office
   const removalOrder = ["Warehouse", "Teaneck Store", "Toms River", "Bogota", "Cedarhurst", "Office"]
     .filter((l) => locations.includes(l));
@@ -122,92 +82,106 @@ function capToShipTotals(built, locations, sizes, ship) {
       }
     }
   }
-
   return out;
 }
 
 /**
- * Main allocation engine — location-by-location fill strategy.
+ * Main allocation engine.
  *
- * Strategy:
- *   1. Office gets 1 XS + 1 S first (if available).
- *   2. For each store location in order (Cedarhurst → Bogota → Toms River →
- *      Teaneck → Warehouse), fill ALL of that location's target packs
- *      before moving on to the next.
- *   3. Remaining inventory goes to Warehouse.
- *   4. Ship overage (ship > buy) also lands in Warehouse.
- *   5. Hard-cap to shipped totals per size.
+ * How it works:
+ *   1.  avail[s] = min(buy[s], ship[s])           — units available to pack
+ *   2.  overage[s] = max(0, ship[s] − buy[s])     — extra shipped units
+ *   3.  totalAvail = Σ avail[s]
+ *   4.  packSize   = Σ PACK_COMPOSITION[s]         (10 normally, 11 with XXS)
+ *   5.  totalPacks = floor(totalAvail / packSize)
+ *   6.  Count each location's appearances in PACK_SEQUENCE[0 .. totalPacks−1]
+ *       → packCounts[loc] = how many packs that location receives
+ *   7.  Allocate in order:
+ *         a. Office  → always gets exactly 1 XS + 1 S (if available)
+ *         b. For each store (Cedarhurst → Bogota → Toms River → Teaneck → Warehouse):
+ *              target[s] = packCounts[loc] × PACK_COMPOSITION[s]
+ *              actual[s] = min(target[s], inv[s])
+ *              Subtract actual[s] from running inventory before moving on.
+ *   8.  Remaining inventory → Warehouse (sink).
+ *   9.  Ship overage  → Warehouse.
+ *  10.  Hard-cap: no size total may exceed total shipped for that size.
  *
- * Target packs per location (derived from the 15-pack sequence):
- *   Cedarhurst: 5 | Bogota: 4 | Toms River: 2 | Teaneck: 1 | Warehouse: 3
- *
- * First-pack gating still applies per location:
- *   - pack must contain at least 1 S
- *   - inventory must not be missing 2+ core sizes (XS/S/M/L)
- *   If gating fails, that location receives 0 packs (skipped).
+ * No first-pack gating — a location receives whatever is available for each
+ * size even if some sizes are fully depleted (those sizes just get 0).
  */
 export function computeAllocation({ buy, ship, locations, sizes, ignoreTeaneck }) {
   let built = emptyMatrix(locations, sizes);
 
-  // avail = min(buy, ship)
-  const avail = {};
-  for (const s of sizes) avail[s] = Math.min(Number(buy?.[s] ?? 0), Number(ship?.[s] ?? 0));
-
-  // overage = ship − buy (positive only)
+  // ── Step 1–2: avail & overage ─────────────────────────────────────────────
+  const avail   = {};
   const overage = {};
-  for (const s of sizes) overage[s] = Math.max(0, Number(ship?.[s] ?? 0) - Number(buy?.[s] ?? 0));
+  for (const s of sizes) {
+    avail[s]   = Math.min(Number(buy?.[s] ?? 0), Number(ship?.[s] ?? 0));
+    overage[s] = Math.max(0, Number(ship?.[s] ?? 0) - Number(buy?.[s] ?? 0));
+  }
 
+  // ── Step 3–5: total packs ─────────────────────────────────────────────────
   const productHasXXS = Number(buy?.XXS ?? 0) > 0 || Number(ship?.XXS ?? 0) > 0;
+  const packComp      = productHasXXS ? PACK_WITH_XXS : PACK_NO_XXS;
+  const packSize      = Object.values(packComp).reduce((a, b) => a + b, 0);
 
+  const totalAvail  = sizes.reduce((a, s) => a + avail[s], 0);
+  const totalPacks  = Math.floor(totalAvail / packSize);
+
+  // ── Step 6: count packs per location from the sequence ───────────────────
+  const seqLen    = Math.min(totalPacks, PACK_SEQUENCE_1_TO_15.length);
+  const packCounts = {};
+  for (let i = 0; i < seqLen; i++) {
+    const loc = PACK_SEQUENCE_1_TO_15[i];
+    packCounts[loc] = (packCounts[loc] || 0) + 1;
+  }
+
+  // Running inventory pool
   let inv = { ...avail };
 
   const sink = locations.includes("Warehouse") ? "Warehouse" : locations[locations.length - 1];
 
-  // ── Step 1: Office first (1 XS + 1 S) ──────────────────────────────────
+  // ── Step 7a: Office — always 1 XS + 1 S (if both available) ─────────────
   if (locations.includes("Office") && Number(inv?.XS ?? 0) >= 1 && Number(inv?.S ?? 0) >= 1) {
     built = addToLoc(built, "Office", { XS: 1, S: 1 });
-    inv   = subtractPack(inv, { XS: 1, S: 1 });
+    inv   = { ...inv, XS: inv.XS - 1, S: inv.S - 1 };
   }
 
-  // ── Step 2: Fill each store location completely before moving on ─────────
+  // ── Step 7b: Stores — fill each location completely before moving on ──────
   for (const loc of ALLOCATION_ORDER) {
-    // When ignoreTeaneck is on, Teaneck's allocation goes to Warehouse instead
+    // ignoreTeaneck: redirect Teaneck's packs to Warehouse
     const effectiveLoc = (ignoreTeaneck && loc === "Teaneck Store") ? "Warehouse" : loc;
     if (!locations.includes(effectiveLoc)) continue;
 
-    const targetPacks = PACKS_PER_LOC[loc] ?? 0;
-    let packsGiven = 0;
+    const nPacks = packCounts[loc] || 0;
+    if (nPacks === 0) continue; // this location doesn't appear in the sequence for this batch
 
-    for (let i = 0; i < targetPacks; i++) {
-      const pack = buildPackFromInventory(inv, productHasXXS);
-      if (sumPack(pack) === 0) break; // no inventory left at all
+    const locAlloc = {};
+    for (const s of sizes) {
+      const target = nPacks * (packComp[s] || 0);
+      const actual = Math.min(target, Number(inv?.[s] ?? 0));
+      if (actual > 0) locAlloc[s] = actual;
+    }
 
-      // First-pack gating (only checked for the very first pack of each location)
-      if (packsGiven === 0) {
-        const sCount     = Number(pack?.S ?? 0);
-        const missingCore = countMissingCoreSizes(inv);
-        if (sCount === 0 || missingCore >= 2) {
-          break; // skip this location entirely — inventory too depleted
-        }
-      }
+    built = addToLoc(built, effectiveLoc, locAlloc);
 
-      built = addToLoc(built, effectiveLoc, pack);
-      inv   = subtractPack(inv, pack);
-      packsGiven++;
+    // Subtract from running inventory
+    for (const s of sizes) {
+      inv[s] = Math.max(0, Number(inv?.[s] ?? 0) - Number(locAlloc?.[s] ?? 0));
     }
   }
 
-  // ── Step 3: Remaining inventory → Warehouse ──────────────────────────────
+  // ── Step 8: Remaining inventory → Warehouse ───────────────────────────────
   for (const s of sizes) {
     built[sink][s] = Number(built?.[sink]?.[s] ?? 0) + Number(inv?.[s] ?? 0);
   }
 
-  // ── Step 4: Ship overage → Warehouse ────────────────────────────────────
+  // ── Step 9: Ship overage → Warehouse ─────────────────────────────────────
   for (const s of sizes) {
     built[sink][s] = Number(built?.[sink]?.[s] ?? 0) + Number(overage?.[s] ?? 0);
   }
 
-  // ── Step 5: Hard cap per size to shipped totals ──────────────────────────
+  // ── Step 10: Hard cap ─────────────────────────────────────────────────────
   built = capToShipTotals(built, locations, sizes, ship);
 
   const totals = perSizeTotalsFromMatrix(built, locations, sizes);

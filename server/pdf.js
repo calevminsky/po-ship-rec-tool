@@ -1,36 +1,48 @@
 import PDFDocument from "pdfkit";
 
-// ── Colour palette ───────────────────────────────────────────────────────────
-const HEADER_BG    = "#1a3a5c";   // dark navy banner
-const HEADER_TEXT  = "#ffffff";   // white
-const HEADER_SUB   = "#a8c4d8";   // muted blue for sub-text in banner
-const TBL_HEAD_BG  = "#2d5a8e";   // table header row
-const TBL_HEAD_TXT = "#ffffff";
-const TOTAL_BG     = "#dbeafe";   // light blue for totals row
-const ALT_ROW      = "#f7f9fc";   // subtle stripe for odd data rows
-const BORDER       = "#cbd5e0";   // grid line colour
-const TEXT         = "#1a202c";   // body text
-const SUBTEXT      = "#718096";   // meta / secondary text
-const SECTION_LBL  = "#2d5a8e";   // section labels (e.g. "ALLOCATION")
+// ── Monochrome palette ───────────────────────────────────────────────────────
+const BANNER_BG  = "#111111";  // near-black banner
+const BANNER_TXT = "#ffffff";  // white
+const BANNER_PO  = "#bbbbbb";  // light-gray PO text in banner
+const TBL_HDR_BG = "#333333";  // dark-gray table header row
+const TBL_HDR_TXT= "#ffffff";  // white text in header
+const TOTAL_BG   = "#e0e0e0";  // light-gray totals row
+const ALT_ROW    = "#f5f5f5";  // very-light-gray stripe
+const BORDER     = "#cccccc";  // grid-line colour
+const TEXT       = "#111111";  // near-black body text
+const SECTION_LBL= "#333333";  // section-label text
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+/** Format an ISO timestamp → m/d/yy  e.g. "1/5/25" */
+function fmtDate(isoStr) {
+  if (!isoStr) return "—";
+  const d = new Date(isoStr);
+  return `${d.getUTCMonth() + 1}/${d.getUTCDate()}/${String(d.getUTCFullYear()).slice(-2)}`;
+}
+
+/** Return only the first segment of a label like "Product • Style • Color • Vendor" */
+function productTitle(label) {
+  return (label || "").split("•")[0].trim() || "—";
+}
 
 // ── Table renderer ───────────────────────────────────────────────────────────
-// rows[0] = header row, rows[last] = totals row, everything else = data
+// rows[0] = header row, rows[last] = totals row, everything else = data rows
 function drawTable(doc, { x, y, colWidths, rowHeight, rows }) {
   const totalWidth = colWidths.reduce((a, b) => a + b, 0);
   let cy = y;
 
   for (let r = 0; r < rows.length; r++) {
-    const row        = rows[r];
-    const isHeader   = r === 0;
-    const isTotal    = r === rows.length - 1;
-    const isAltRow   = !isHeader && !isTotal && r % 2 === 0;
+    const row      = rows[r];
+    const isHeader = r === 0;
+    const isTotal  = r === rows.length - 1;
+    const isAlt    = !isHeader && !isTotal && r % 2 === 0;
 
-    // Row background
-    if (isHeader)        doc.rect(x, cy, totalWidth, rowHeight).fill(TBL_HEAD_BG);
-    else if (isTotal)    doc.rect(x, cy, totalWidth, rowHeight).fill(TOTAL_BG);
-    else if (isAltRow)   doc.rect(x, cy, totalWidth, rowHeight).fill(ALT_ROW);
+    if (isHeader)     doc.rect(x, cy, totalWidth, rowHeight).fill(TBL_HDR_BG);
+    else if (isTotal) doc.rect(x, cy, totalWidth, rowHeight).fill(TOTAL_BG);
+    else if (isAlt)   doc.rect(x, cy, totalWidth, rowHeight).fill(ALT_ROW);
 
-    const textColor = isHeader ? TBL_HEAD_TXT : TEXT;
+    const textColor = isHeader ? TBL_HDR_TXT : TEXT;
     const font      = (isHeader || isTotal) ? "Helvetica-Bold" : "Helvetica";
     const fontSize  = 9;
     const textY     = cy + Math.floor((rowHeight - fontSize) / 2);
@@ -48,25 +60,22 @@ function drawTable(doc, { x, y, colWidths, rowHeight, rows }) {
     }
     cy += rowHeight;
   }
-
-  return cy; // bottom edge of table
+  return cy;
 }
 
-// ── Matrix row builder ───────────────────────────────────────────────────────
-// Returns: [ headerRow, ...locationRows, totalsRow ]
+// ── Matrix rows ──────────────────────────────────────────────────────────────
 function buildMatrixRows({ sizes, locations, mat }) {
-  const rows = [];
-  rows.push(["Location", ...sizes, "Total"]);
+  const rows = [["Location", ...sizes, "Total"]];
 
   for (const loc of locations) {
     const row = [loc];
-    let rowTotal = 0;
+    let rt = 0;
     for (const s of sizes) {
       const v = Number(mat?.[loc]?.[s] ?? 0);
-      rowTotal += v;
+      rt += v;
       row.push(v);
     }
-    row.push(rowTotal);
+    row.push(rt);
     rows.push(row);
   }
 
@@ -83,21 +92,20 @@ function buildMatrixRows({ sizes, locations, mat }) {
   return rows;
 }
 
-// ── Shared header banner ─────────────────────────────────────────────────────
+// ── Shared layout pieces ─────────────────────────────────────────────────────
+
 function drawBanner(doc, { title, po, margin, pageWidth }) {
   const bannerH = 54;
   const bannerY = doc.y;
 
-  doc.rect(margin, bannerY, pageWidth, bannerH).fill(HEADER_BG);
+  doc.rect(margin, bannerY, pageWidth, bannerH).fill(BANNER_BG);
 
-  // Title (left)
-  doc.font("Helvetica-Bold").fontSize(22).fillColor(HEADER_TEXT)
+  doc.font("Helvetica-Bold").fontSize(22).fillColor(BANNER_TXT)
     .text(title, margin + 14, bannerY + 10, { lineBreak: false });
 
-  // PO badge (right)
   if (po) {
-    doc.font("Helvetica-Bold").fontSize(12).fillColor(HEADER_SUB)
-      .text(`PO: ${po}`, margin, bannerY + 21, {
+    doc.font("Helvetica-Bold").fontSize(12).fillColor(BANNER_PO)
+      .text(`PO: ${String(po).toUpperCase()}`, margin, bannerY + 21, {
         width: pageWidth - 14,
         align: "right",
         lineBreak: false
@@ -107,31 +115,25 @@ function drawBanner(doc, { title, po, margin, pageWidth }) {
   doc.y = bannerY + bannerH + 14;
 }
 
-// ── Shared product / meta block ──────────────────────────────────────────────
-function drawMeta(doc, { productLabel, username, createdAtISO, margin, pageWidth }) {
-  const dateStr = createdAtISO
-    ? createdAtISO.slice(0, 16).replace("T", " ") + " UTC"
-    : "—";
+function drawMeta(doc, { productLabel, createdAtISO, margin, pageWidth }) {
+  const title   = productTitle(productLabel);
+  const dateStr = fmtDate(createdAtISO);
 
   doc.font("Helvetica-Bold").fontSize(14).fillColor(TEXT)
-    .text(productLabel || "—", margin, doc.y, { width: pageWidth });
-  doc.moveDown(0.3);
+    .text(title, margin, doc.y, { width: pageWidth });
+  doc.moveDown(0.25);
 
-  doc.font("Helvetica").fontSize(9).fillColor(SUBTEXT)
-    .text(
-      `User: ${username || "—"}   ·   Created: ${dateStr}`,
-      margin, doc.y, { width: pageWidth }
-    );
+  doc.font("Helvetica-Bold").fontSize(14).fillColor(TEXT)
+    .text(dateStr, margin, doc.y, { width: pageWidth });
   doc.moveDown(0.75);
 
-  // Separator line
+  // Separator
   const sepY = doc.y;
   doc.moveTo(margin, sepY).lineTo(margin + pageWidth, sepY)
     .strokeColor(BORDER).lineWidth(0.75).stroke();
   doc.y = sepY + 12;
 }
 
-// ── Column widths helper ─────────────────────────────────────────────────────
 function calcColWidths(sizes, pageWidth) {
   const locColW   = 110;
   const totalColW = 58;
@@ -139,7 +141,6 @@ function calcColWidths(sizes, pageWidth) {
   return [locColW, ...sizes.map(() => sizeColW), totalColW];
 }
 
-// ── Section label (for closeout two-table layout) ────────────────────────────
 function drawSectionLabel(doc, label, margin, pageWidth) {
   doc.font("Helvetica-Bold").fontSize(10).fillColor(SECTION_LBL)
     .text(label, margin, doc.y, { width: pageWidth });
@@ -159,16 +160,15 @@ export function buildAllocationPdf({ username, po, productLabel, sizes, location
   const pageWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
 
   drawBanner(doc, { title: "ALLOCATION", po, margin, pageWidth });
-  drawMeta(doc,   { productLabel, username, createdAtISO, margin, pageWidth });
+  drawMeta(doc, { productLabel, createdAtISO, margin, pageWidth });
 
   const colWidths = calcColWidths(sizes, pageWidth);
-  const rowHeight = 24;
 
   drawTable(doc, {
     x: margin,
     y: doc.y,
     colWidths,
-    rowHeight,
+    rowHeight: 24,
     rows: buildMatrixRows({ sizes, locations, mat: allocation })
   });
 
@@ -191,27 +191,19 @@ export function buildCloseoutPdf({ username, po, productLabel, sizes, locations,
   const rowHeight = 24;
 
   drawBanner(doc, { title: "RECEIVING CLOSEOUT", po, margin, pageWidth });
-  drawMeta(doc,   { productLabel, username, createdAtISO, margin, pageWidth });
+  drawMeta(doc, { productLabel, createdAtISO, margin, pageWidth });
 
-  // Allocation table
   drawSectionLabel(doc, "ALLOCATION", margin, pageWidth);
   const afterAlloc = drawTable(doc, {
-    x: margin,
-    y: doc.y,
-    colWidths,
-    rowHeight,
+    x: margin, y: doc.y, colWidths, rowHeight,
     rows: buildMatrixRows({ sizes, locations, mat: allocation })
   });
 
   doc.y = afterAlloc + 20;
 
-  // Scanned table
   drawSectionLabel(doc, "SCANNED", margin, pageWidth);
   drawTable(doc, {
-    x: margin,
-    y: doc.y,
-    colWidths,
-    rowHeight,
+    x: margin, y: doc.y, colWidths, rowHeight,
     rows: buildMatrixRows({ sizes, locations, mat: scanned })
   });
 
@@ -233,8 +225,8 @@ export async function buildOfficeSamplesPdf({ entries, reportDate }) {
 
   doc.fontSize(20).fillColor(TEXT).text("Office Samples Report", { align: "left" });
   doc.moveDown(0.3);
-  doc.fontSize(11).fillColor(SUBTEXT).text(`Date: ${reportDate}`);
-  doc.fontSize(10).fillColor(SUBTEXT)
+  doc.fontSize(11).fillColor(SECTION_LBL).text(`Date: ${reportDate}`);
+  doc.fontSize(10).fillColor(SECTION_LBL)
     .text(`${entries.length} product${entries.length === 1 ? "" : "s"} sent to office`);
   doc.moveDown(0.8);
 
@@ -257,14 +249,12 @@ export async function buildOfficeSamplesPdf({ entries, reportDate }) {
         const commaIdx = raw.indexOf(",");
         const b64      = commaIdx >= 0 ? raw.slice(commaIdx + 1) : raw;
         doc.image(Buffer.from(b64, "base64"), margin, startY, { fit: [imgSize, imgSize] });
-      } catch {
-        // skip image if decode fails
-      }
+      } catch { /* skip image */ }
     }
 
     doc.fontSize(13).fillColor(TEXT)
       .text(e.productTitle || "(Unknown)", textX, startY, { width: textW });
-    doc.fontSize(10).fillColor(SUBTEXT)
+    doc.fontSize(10).fillColor(SECTION_LBL)
       .text(`PO: ${e.poNumber || "—"}`,               { width: textW })
       .text(`Sizes sent: ${(e.sizes || []).join(", ")}`, { width: textW })
       .text(`Time: ${e.timestamp || "—"}`,             { width: textW });
@@ -275,8 +265,7 @@ export async function buildOfficeSamplesPdf({ entries, reportDate }) {
 
     if (i < entries.length - 1) {
       doc.moveDown(0.4);
-      doc.moveTo(margin, doc.y)
-        .lineTo(margin + pageWidth, doc.y)
+      doc.moveTo(margin, doc.y).lineTo(margin + pageWidth, doc.y)
         .strokeColor(BORDER).stroke();
       doc.moveDown(0.6);
     }
