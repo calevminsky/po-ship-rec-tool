@@ -375,30 +375,42 @@ app.post("/api/allocation-pdf", requireAuth, async (req, res) => {
 });
 
 // ---- Office Samples: upload photo to Airtable attachment field ----
+// ---- Office Samples: upload photo to Airtable attachment field ----
+// We temporarily serve the image from our own server so Airtable can fetch it
+// by URL — this avoids needing the internal field ID required by content.airtable.com.
+const _tempPhotos = new Map(); // id -> { buffer, contentType, expires }
+app.get("/api/temp-photo/:id", (req, res) => {
+  const entry = _tempPhotos.get(req.params.id);
+  if (!entry || entry.expires < Date.now()) return res.status(404).send("Not found");
+  res.setHeader("Content-Type", entry.contentType);
+  res.send(entry.buffer);
+});
 async function uploadPhotoToAirtable(recordId, photoBase64, photoFilename) {
   if (!photoBase64) return;
-
+  const APP_URL = process.env.APP_URL;
+  if (!APP_URL) throw new Error("APP_URL env var not set — cannot upload photo to Airtable.");
   const commaIdx = photoBase64.indexOf(",");
   const b64 = commaIdx >= 0 ? photoBase64.slice(commaIdx + 1) : photoBase64;
   const mimeMatch = photoBase64.match(/data:([^;]+);/);
   const contentType = mimeMatch ? mimeMatch[1] : "image/jpeg";
   const buffer = Buffer.from(b64, "base64");
-
+  // Store temporarily for 5 minutes so Airtable can fetch it
+  const tempId = crypto.randomUUID();
+  _tempPhotos.set(tempId, { buffer, contentType, expires: Date.now() + 5 * 60 * 1000 });
+  // Clean up expired entries
+  for (const [k, v] of _tempPhotos) { if (v.expires < Date.now()) _tempPhotos.delete(k); }
+  const photoUrl = `${APP_URL}/api/temp-photo/${tempId}`;
+  const filename = photoFilename || "photo.jpg";
   const baseId = process.env.AIRTABLE_BASE_ID;
   const token = process.env.AIRTABLE_TOKEN;
+  const table = process.env.AIRTABLE_TABLE_NAME || "Products";
   const fieldName = AIRTABLE_FIELDS.OFFICE_SAMPLE_PHOTO_FIELD;
-
-  const url = `https://content.airtable.com/v0/${baseId}/${recordId}/${encodeURIComponent(fieldName)}/uploadAttachment`;
-
-  const form = new FormData();
-  form.append("file", new Blob([buffer], { type: contentType }), photoFilename || "photo.jpg");
-
+  const url = `https://api.airtable.com/v0/${baseId}/${encodeURIComponent(table)}/${recordId}`;
   const res = await fetch(url, {
-    method: "POST",
-    headers: { Authorization: `Bearer ${token}` },
-    body: form
+    method: "PATCH",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+    body: JSON.stringify({ fields: { [fieldName]: [{ url: photoUrl, filename }] } })
   });
-
   if (!res.ok) {
     const text = await res.text().catch(() => "");
     throw new Error(`Airtable photo upload failed (${res.status}): ${text}`);
