@@ -591,7 +591,7 @@ app.post("/api/bulk-alloc-merged", requireAuth, async (req, res) => {
     const merged = await PDFDocument.create();
     for (const buf of buffers) {
       const donor = await PDFDocument.load(buf);
-      const pages = await merged.copyPagesFrom(donor, donor.getPageIndices());
+      const pages = await merged.copyPages(donor, donor.getPageIndices());
       pages.forEach(p => merged.addPage(p));
     }
     const mergedBuffer = Buffer.from(await merged.save());
