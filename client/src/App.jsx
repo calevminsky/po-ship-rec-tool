@@ -520,127 +520,55 @@ export default function App() {
       return out;
     };
 
-    // Dynamic pack: core required, XL optional, XXS optional
-    const buildDynamicPack = (pool) => {
-      if (computeMaxPacksAvailable(pool, PACK_CORE_NO_XL) < 1) return null;
-
-      const pack = { ...PACK_CORE_NO_XL };
-
-      // XL optional
-      if (Number(pool?.XL ?? 0) >= 1) pack.XL = 1;
-
-      // XXS optional
-      if (productHasXXS && Number(pool?.XXS ?? 0) >= 1) pack.XXS = 1;
-
-      return pack;
-    };
-
-    // Starter pack rule: only for store's FIRST pack, must include at least 1S,
-    // and should be "core-ish" (missing at most one of XS/M/L). XL+XXS remain optional.
-    const buildStarterPack = (pool) => {
-      if (Number(pool?.S ?? 0) < 1) return null;
-
-      const tryBuild = (need) => {
-        for (const [sz, qty] of Object.entries(need)) {
-          if (Number(pool?.[sz] ?? 0) < qty) return null;
-        }
-        return { ...need };
-      };
-
-      // best: full core
-      let pack = tryBuild(PACK_CORE_NO_XL);
-
-      // fallback starters (still includes S)
-      if (!pack) pack = tryBuild({ XS: 3, S: 3, M: 2 }); // missing L
-      if (!pack) pack = tryBuild({ XS: 3, S: 3, L: 1 }); // missing M
-      if (!pack) pack = tryBuild({ S: 3, M: 2, L: 1 }); // missing XS
-
-      if (!pack) return null;
-
-      // XL optional
-      if (Number(pool?.XL ?? 0) >= 1) pack.XL = 1;
-
-      // XXS optional
-      if (productHasXXS && Number(pool?.XXS ?? 0) >= 1) pack.XXS = 1;
-
-      return pack;
-    };
-
     // Track packs received per location
-    const packsReceived = Object.fromEntries(locations.map((l) => [l, 0]));
+const packsReceived = Object.fromEntries(locations.map((l) => [l, 0]));
+let built = built0;
+let officeGiven = false;
 
-    let built = built0;
-    let officeGiven = false;
+for (let i = 0; i < PACK_SEQUENCE_1_TO_15.length; i++) {
+  let loc = PACK_SEQUENCE_1_TO_15[i];
 
-    // Allocate packs via sequence (1..15)
-    for (let i = 0; i < PACK_SEQUENCE_1_TO_15.length; i++) {
-      let loc = PACK_SEQUENCE_1_TO_15[i];
+  if (ignoreTeaneck && loc === "Teaneck Store") loc = "Warehouse";
+  if (!locations.includes(loc)) continue;
 
-      // Ignore Teaneck: route that "slot" to Warehouse
-      if (ignoreTeaneck && loc === "Teaneck Store") loc = "Warehouse";
+  const isFirstPack = packsReceived[loc] === 0;
 
-      if (!locations.includes(loc)) continue;
+  const pack = buildPack(inv, { isFirstPack, productHasXXS });
+  if (!pack) break;
 
-      // Try full dynamic pack first
-      const pack = buildDynamicPack(inv);
-      if (pack) {
-        built = addToLoc(built, loc, pack);
+  // allocate pack to loc
+  built = addToLoc(built, loc, pack);
 
-        // subtract from inv
-        const nextInv = { ...inv };
-        for (const [sz, qty] of Object.entries(pack)) {
-          nextInv[sz] = Math.max(0, Number(nextInv?.[sz] ?? 0) - Number(qty ?? 0));
-        }
-        inv = nextInv;
+  // subtract from inv
+  const nextInv = { ...inv };
+  for (const [sz, qty] of Object.entries(pack)) {
+    nextInv[sz] = Math.max(0, Number(nextInv?.[sz] ?? 0) - Number(qty ?? 0));
+  }
+  inv = nextInv;
 
-        // mark pack received
-        packsReceived[loc] += 1;
+  packsReceived[loc] += 1;
 
-        // ✅ Office rule: on Bogota FIRST successful pack, move XS+S from Bogota to Office
-        if (!officeGiven && loc === "Bogota" && packsReceived["Bogota"] === 1 && locations.includes("Office")) {
-          const before = built;
-          built = moveBogotaToOfficeXSAndS(built);
-          // Only consider it "given" if it actually moved (avoid lying if Bogota starter had no XS)
-          if (
-            Number(before?.Office?.XS ?? 0) !== Number(built?.Office?.XS ?? 0) ||
-            Number(before?.Office?.S ?? 0) !== Number(built?.Office?.S ?? 0)
-          ) {
-            officeGiven = true;
-          }
-        }
+  // ✅ Office rule: take 1 XS + 1 S out of Bogota's FIRST pack allocation
+  if (
+    !officeGiven &&
+    loc === "Bogota" &&
+    packsReceived["Bogota"] === 1 && // just allocated first Bogota pack
+    locations.includes("Office")
+  ) {
+    const bogXS = Number(built?.["Bogota"]?.XS ?? 0);
+    const bogS  = Number(built?.["Bogota"]?.S  ?? 0);
 
-        continue;
-      }
+    // only if Bogota's allocation actually has both
+    if (bogXS >= 1 && bogS >= 1) {
+      built["Bogota"]["XS"] = bogXS - 1;
+      built["Bogota"]["S"]  = bogS - 1;
+      built["Office"]["XS"] = Number(built?.["Office"]?.XS ?? 0) + 1;
+      built["Office"]["S"]  = Number(built?.["Office"]?.S  ?? 0) + 1;
+      officeGiven = true;
+    }
+  }
+}
 
-      // If no full pack, allow starter ONLY if this is store's first pack
-      if (packsReceived[loc] === 0) {
-        const starter = buildStarterPack(inv);
-        if (starter) {
-          built = addToLoc(built, loc, starter);
-
-          const nextInv = { ...inv };
-          for (const [sz, qty] of Object.entries(starter)) {
-            nextInv[sz] = Math.max(0, Number(nextInv?.[sz] ?? 0) - Number(qty ?? 0));
-          }
-          inv = nextInv;
-
-          packsReceived[loc] += 1;
-
-          // ✅ Office rule also applies if Bogota’s first pack is a starter
-          if (!officeGiven && loc === "Bogota" && packsReceived["Bogota"] === 1 && locations.includes("Office")) {
-            const before = built;
-            built = moveBogotaToOfficeXSAndS(built);
-            if (
-              Number(before?.Office?.XS ?? 0) !== Number(built?.Office?.XS ?? 0) ||
-              Number(before?.Office?.S ?? 0) !== Number(built?.Office?.S ?? 0)
-            ) {
-              officeGiven = true;
-            }
-          }
-
-          continue;
-        }
-      }
 
       // ✅ IMPORTANT FIX: do NOT stop the whole sequence (this is why Bogota missed its later turn #13)
       // If this slot can't take a pack, just skip it and keep going.
