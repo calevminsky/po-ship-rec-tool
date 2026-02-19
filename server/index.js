@@ -3,6 +3,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import cookieParser from "cookie-parser";
 import archiver from "archiver";
+import { PDFDocument } from "pdf-lib";
 
 import { listRecordsByPO, updateRecord, getSizes, AIRTABLE_FIELDS, listRecordsByShopifyGid } from "./airtable.js";
 import {
@@ -552,6 +553,54 @@ app.post("/api/bulk-alloc", requireAuth, async (req, res) => {
   } catch (e) {
     // If headers not sent yet, send JSON error; otherwise just end
     if (!res.headersSent) res.status(500).json({ error: e.message || "Bulk alloc error" });
+    else res.end();
+  }
+});
+
+// ---- Bulk Allocation: save + generate single merged PDF ----
+app.post("/api/bulk-alloc-merged", requireAuth, async (req, res) => {
+  try {
+    const { items } = req.body || {};
+    if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: "items required" });
+
+    const buffers = [];
+    for (const item of items) {
+      const { recordId, allocJson, po, productLabel, sizes, locations, allocation, buy, ship } = item;
+
+      // 1. Save allocation to Airtable
+      if (recordId && allocJson !== undefined) {
+        await updateRecord(recordId, { [AIRTABLE_FIELDS.ALLOC_FIELD]: allocJson });
+      }
+
+      // 2. Generate individual PDF
+      const pdfBuffer = await buildAllocationPdf({
+        username: "bulk",
+        po: po || "",
+        productLabel: productLabel || "",
+        sizes: sizes || [],
+        locations: locations || [],
+        allocation: allocation || {},
+        createdAtISO: new Date().toISOString(),
+        buy: buy || {},
+        ship: ship || {}
+      });
+      buffers.push(pdfBuffer);
+    }
+
+    // 3. Merge all PDFs into one document
+    const merged = await PDFDocument.create();
+    for (const buf of buffers) {
+      const donor = await PDFDocument.load(buf);
+      const pages = await merged.copyPagesFrom(donor, donor.getPageIndices());
+      pages.forEach(p => merged.addPage(p));
+    }
+    const mergedBuffer = Buffer.from(await merged.save());
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="bulk_allocations_${Date.now()}.pdf"`);
+    res.send(mergedBuffer);
+  } catch (e) {
+    if (!res.headersSent) res.status(500).json({ error: e.message || "Bulk alloc merge error" });
     else res.end();
   }
 });
