@@ -63,6 +63,25 @@ function drawTable(doc, { x, y, colWidths, rowHeight, rows }) {
   return cy;
 }
 
+// ── Buy / Ship summary rows ───────────────────────────────────────────────────
+function buildBuyShipRows(sizes, buy, ship) {
+  const header = ["", ...sizes, "Total"];
+  const buyRow  = ["Buy Total"];
+  const shipRow = ["Ship Total"];
+  let buyGrand = 0, shipGrand = 0;
+  for (const s of sizes) {
+    const b  = Number(buy?.[s]  ?? 0);
+    const sh = Number(ship?.[s] ?? 0);
+    buyRow.push(b);
+    shipRow.push(sh);
+    buyGrand  += b;
+    shipGrand += sh;
+  }
+  buyRow.push(buyGrand);
+  shipRow.push(shipGrand);
+  return [header, buyRow, shipRow];
+}
+
 // ── Matrix rows ──────────────────────────────────────────────────────────────
 function buildMatrixRows({ sizes, locations, mat }) {
   const rows = [["Location", ...sizes, "Total"]];
@@ -150,7 +169,7 @@ function drawSectionLabel(doc, label, margin, pageWidth) {
 // ════════════════════════════════════════════════════════════════════════════
 //  Allocation PDF
 // ════════════════════════════════════════════════════════════════════════════
-export function buildAllocationPdf({ username, po, productLabel, sizes, locations, allocation, createdAtISO }) {
+export function buildAllocationPdf({ username, po, productLabel, sizes, locations, allocation, createdAtISO, buy, ship }) {
   const doc = new PDFDocument({ margin: 36 });
   const buffers = [];
   doc.on("data", (d) => buffers.push(d));
@@ -164,12 +183,22 @@ export function buildAllocationPdf({ username, po, productLabel, sizes, location
 
   const colWidths = calcColWidths(sizes, pageWidth);
 
-  drawTable(doc, {
+  const afterAlloc = drawTable(doc, {
     x: margin,
     y: doc.y,
     colWidths,
     rowHeight: 24,
     rows: buildMatrixRows({ sizes, locations, mat: allocation })
+  });
+
+  // Buy / Ship summary
+  doc.y = afterAlloc + 14;
+  drawTable(doc, {
+    x: margin,
+    y: doc.y,
+    colWidths,
+    rowHeight: 22,
+    rows: buildBuyShipRows(sizes, buy || {}, ship || {})
   });
 
   doc.end();
@@ -179,7 +208,7 @@ export function buildAllocationPdf({ username, po, productLabel, sizes, location
 // ════════════════════════════════════════════════════════════════════════════
 //  Closeout PDF  (Allocation + Scanned)
 // ════════════════════════════════════════════════════════════════════════════
-export function buildCloseoutPdf({ username, po, productLabel, sizes, locations, allocation, scanned, createdAtISO }) {
+export function buildCloseoutPdf({ username, po, productLabel, sizes, locations, allocation, scanned, createdAtISO, buy, ship }) {
   const doc = new PDFDocument({ margin: 36 });
   const buffers = [];
   doc.on("data", (d) => buffers.push(d));
@@ -199,7 +228,15 @@ export function buildCloseoutPdf({ username, po, productLabel, sizes, locations,
     rows: buildMatrixRows({ sizes, locations, mat: allocation })
   });
 
-  doc.y = afterAlloc + 20;
+  // Buy / Ship summary (under allocation matrix)
+  const afterBuyShip = drawTable(doc, {
+    x: margin,
+    y: afterAlloc + 14,
+    colWidths,
+    rowHeight: 22,
+    rows: buildBuyShipRows(sizes, buy || {}, ship || {})
+  });
+  doc.y = afterBuyShip + 20;
 
   drawSectionLabel(doc, "SCANNED", margin, pageWidth);
   drawTable(doc, {

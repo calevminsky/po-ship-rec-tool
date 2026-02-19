@@ -409,6 +409,10 @@ export default function App() {
     setBaRows((prev) => prev.map((r, i) => i === idx ? { ...r, ignoreTeaneck: !r.ignoreTeaneck } : r));
   }
 
+  function baRemoveRow(idx) {
+    setBaRows((prev) => prev.filter((_, i) => i !== idx));
+  }
+
   async function onLoadBulkPOs() {
     const poList = baPOText.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
     if (!poList.length) return;
@@ -462,7 +466,9 @@ export default function App() {
         productLabel: row.label,
         sizes,
         locations,
-        allocation: alloc
+        allocation: alloc,
+        buy: row.rec?.buy || {},
+        ship: row.rec?.ship || {}
       };
     });
 
@@ -799,7 +805,9 @@ export default function App() {
         productLabel: selected.label,
         sizes,
         locations,
-        allocation: alloc
+        allocation: alloc,
+        buy: selected.buy || {},
+        ship: shipEdits || {}
       };
 
       const pdfBlob = await allocationPdf(payload);
@@ -1026,6 +1034,27 @@ export default function App() {
     const size = normalizeSizeValue(variant.sizeValue);
     setOsProduct(product);
     setOsScanned([{ size, inventoryItemId: variant.inventoryItemId, barcode }]);
+
+    // Auto-lookup linked POs via Shopify Product GID
+    try {
+      const linked = await fetchRecordsByShopifyGid(product.productId);
+      const linkedRecs = linked.records || [];
+      if (linkedRecs.length >= 1) {
+        const autoPO = linkedRecs[0].po;
+        setOsPoInput(autoPO);
+        // If exactly one linked PO, also auto-load the Airtable record
+        if (linkedRecs.length === 1) {
+          const data = await fetchPO(autoPO);
+          const match = (data.records || []).find((rec) => rec.shopifyProductGid === product.productId);
+          if (match) {
+            setOsRecord(match);
+            setOsDelivery(fmtDateForInput(match.delivery) || "");
+          }
+        }
+      }
+    } catch {
+      // Silently ignore — user can enter PO manually
+    }
   }
 
   async function onOsCameraScan() {
@@ -1166,7 +1195,9 @@ export default function App() {
         allocation: alloc,
         scanned: scan,
         shopifyProduct: shopifyLinked ? shopifyProduct : null,
-        officeAlreadySent: !!selected.officeSent
+        officeAlreadySent: !!selected.officeSent,
+        buy: selected.buy || {},
+        ship: shipEdits || {}
       };
 
       const pdfBlob = await closeoutPdf(payload);
@@ -1479,6 +1510,7 @@ export default function App() {
                 running={baRunning}
                 zipReady={baZipReady}
                 onToggleIgnoreTeaneck={baToggleIgnoreTeaneck}
+                onRemoveRow={baRemoveRow}
                 onRun={onRunBulkAlloc}
               />
             ) : mode === "product-lookup" ? (
@@ -1971,12 +2003,12 @@ function ReceivingMatrixClean({ locations, sizes, alloc, scan, activeLoc, edit, 
 
 /* ---------------- Bulk Allocation Panel ---------------- */
 
-function BulkAllocationPanel({ poText, onPoTextChange, onLoad, rows, loaded, running, zipReady, onToggleIgnoreTeaneck, onRun }) {
+function BulkAllocationPanel({ poText, onPoTextChange, onLoad, rows, loaded, running, zipReady, onToggleIgnoreTeaneck, onRemoveRow, onRun }) {
   const validCount = rows.filter((r) => !r.error).length;
   const errorCount = rows.filter((r) => r.error).length;
 
   return (
-    <div style={{ maxWidth: 720 }}>
+    <div style={{ maxWidth: 800 }}>
       <div className="sectionTitle">Mode 5 — Bulk Allocation</div>
 
       {/* Step 1 */}
@@ -2005,7 +2037,7 @@ function BulkAllocationPanel({ poText, onPoTextChange, onLoad, rows, loaded, run
       {loaded && rows.length > 0 && (
         <div style={{ marginTop: 24 }}>
           <div className="hint" style={{ marginBottom: 10 }}>
-            Step 2 — Check <strong>Ignore Teaneck</strong> for any products that need it, then run.
+            Step 2 — Check <strong>Ignore Teaneck</strong> for any products that need it, remove rows you don't want, then run.
           </div>
           <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>
             {validCount} product{validCount !== 1 ? "s" : ""} loaded
@@ -2017,28 +2049,43 @@ function BulkAllocationPanel({ poText, onPoTextChange, onLoad, rows, loaded, run
               <tr style={{ background: "#f5f5f5" }}>
                 <th style={{ padding: "8px 10px", border: "1px solid #e0e0e0", textAlign: "left" }}>PO</th>
                 <th style={{ padding: "8px 10px", border: "1px solid #e0e0e0", textAlign: "left" }}>Product</th>
+                <th style={{ padding: "8px 10px", border: "1px solid #e0e0e0", textAlign: "center", whiteSpace: "nowrap" }}>Buy Units</th>
                 <th style={{ padding: "8px 10px", border: "1px solid #e0e0e0", textAlign: "center", whiteSpace: "nowrap" }}>Ignore Teaneck</th>
+                <th style={{ padding: "8px 10px", border: "1px solid #e0e0e0", textAlign: "center" }}></th>
               </tr>
             </thead>
             <tbody>
-              {rows.map((row, i) => (
-                <tr key={i} style={{ background: row.error ? "#fff5f5" : i % 2 === 0 ? "#fff" : "#f9fafb" }}>
-                  <td style={{ padding: "7px 10px", border: "1px solid #e0e0e0", fontWeight: 500 }}>{row.po}</td>
-                  <td style={{ padding: "7px 10px", border: "1px solid #e0e0e0", color: row.error ? "var(--bad)" : "inherit" }}>
-                    {row.error ? `⚠ ${row.label}` : row.label}
-                  </td>
-                  <td style={{ padding: "7px 10px", border: "1px solid #e0e0e0", textAlign: "center" }}>
-                    {!row.error && (
-                      <input
-                        type="checkbox"
-                        checked={row.ignoreTeaneck}
-                        onChange={() => onToggleIgnoreTeaneck(i)}
-                        style={{ cursor: "pointer", width: 16, height: 16 }}
-                      />
-                    )}
-                  </td>
-                </tr>
-              ))}
+              {rows.map((row, i) => {
+                const buyTotal = Object.values(row.rec?.buy || {}).reduce((a, v) => a + Number(v), 0);
+                return (
+                  <tr key={i} style={{ background: row.error ? "#fff5f5" : i % 2 === 0 ? "#fff" : "#f9fafb" }}>
+                    <td style={{ padding: "7px 10px", border: "1px solid #e0e0e0", fontWeight: 500 }}>{row.po}</td>
+                    <td style={{ padding: "7px 10px", border: "1px solid #e0e0e0", color: row.error ? "var(--bad)" : "inherit" }}>
+                      {row.error ? `⚠ ${row.label}` : row.label}
+                    </td>
+                    <td style={{ padding: "7px 10px", border: "1px solid #e0e0e0", textAlign: "center", fontWeight: 500 }}>
+                      {row.error ? "—" : buyTotal}
+                    </td>
+                    <td style={{ padding: "7px 10px", border: "1px solid #e0e0e0", textAlign: "center" }}>
+                      {!row.error && (
+                        <input
+                          type="checkbox"
+                          checked={row.ignoreTeaneck}
+                          onChange={() => onToggleIgnoreTeaneck(i)}
+                          style={{ cursor: "pointer", width: 16, height: 16 }}
+                        />
+                      )}
+                    </td>
+                    <td style={{ padding: "7px 10px", border: "1px solid #e0e0e0", textAlign: "center" }}>
+                      <button
+                        onClick={() => onRemoveRow(i)}
+                        style={{ background: "none", border: "none", cursor: "pointer", color: "#9ca3af", fontSize: 16, fontWeight: 700, lineHeight: 1, padding: "0 4px" }}
+                        title="Remove"
+                      >×</button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
 

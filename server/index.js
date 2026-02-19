@@ -276,7 +276,7 @@ app.patch("/api/record/:id/link-shopify-product", requireAuth, async (req, res) 
 app.post("/api/closeout", requireAuth, async (req, res) => {
   try {
     const username = req.user?.username || "unknown";
-    const { po, productLabel, recordId, sizes, locations, allocation, scanned, shopifyProduct } = req.body || {};
+    const { po, productLabel, recordId, sizes, locations, allocation, scanned, shopifyProduct, buy, ship } = req.body || {};
     if (!recordId) return res.status(400).json({ error: "Missing recordId" });
 
     // Rec totals per size from scanned matrix
@@ -345,7 +345,9 @@ app.post("/api/closeout", requireAuth, async (req, res) => {
       locations,
       allocation,
       scanned,
-      createdAtISO
+      createdAtISO,
+      buy: buy || {},
+      ship: ship || {}
     });
 
     res.setHeader("Content-Type", "application/pdf");
@@ -360,7 +362,7 @@ app.post("/api/closeout", requireAuth, async (req, res) => {
 app.post("/api/allocation-pdf", requireAuth, async (req, res) => {
   try {
     const username = req.user?.username || "unknown";
-    const { po, productLabel, sizes, locations, allocation } = req.body || {};
+    const { po, productLabel, sizes, locations, allocation, buy, ship } = req.body || {};
 
     if (!po) return res.status(400).json({ error: "Missing po" });
     if (!productLabel) return res.status(400).json({ error: "Missing productLabel" });
@@ -376,7 +378,9 @@ app.post("/api/allocation-pdf", requireAuth, async (req, res) => {
       sizes,
       locations,
       allocation,
-      createdAtISO
+      createdAtISO,
+      buy: buy || {},
+      ship: ship || {}
     });
 
     res.setHeader("Content-Type", "application/pdf");
@@ -520,7 +524,7 @@ app.post("/api/bulk-alloc", requireAuth, async (req, res) => {
     archive.pipe(res);
 
     for (const item of items) {
-      const { recordId, allocJson, po, productLabel, sizes, locations, allocation } = item;
+      const { recordId, allocJson, po, productLabel, sizes, locations, allocation, buy, ship } = item;
 
       // 1. Save allocation to Airtable
       if (recordId && allocJson !== undefined) {
@@ -535,7 +539,9 @@ app.post("/api/bulk-alloc", requireAuth, async (req, res) => {
         sizes: sizes || [],
         locations: locations || [],
         allocation: allocation || {},
-        createdAtISO: new Date().toISOString()
+        createdAtISO: new Date().toISOString(),
+        buy: buy || {},
+        ship: ship || {}
       });
 
       const filename = `${safeName(po)}_${safeName(productLabel)}.pdf`;
