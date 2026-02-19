@@ -2,6 +2,7 @@ import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import cookieParser from "cookie-parser";
+import archiver from "archiver";
 
 import { listRecordsByPO, updateRecord, getSizes, AIRTABLE_FIELDS } from "./airtable.js";
 import {
@@ -489,6 +490,51 @@ app.post("/api/office-samples/session-pdf", requireAuth, async (req, res) => {
     res.send(pdfBuffer);
   } catch (e) {
     res.status(500).json({ error: e.message || "Session PDF error" });
+  }
+});
+
+// ---- Bulk Allocation: save + generate PDFs + zip ----
+app.post("/api/bulk-alloc", requireAuth, async (req, res) => {
+  try {
+    const { items } = req.body || {};
+    if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: "items required" });
+
+    // Sanitize filename part
+    function safeName(s) { return String(s || "").replace(/[^\w\s-]/g, "").replace(/\s+/g, "_").slice(0, 60); }
+
+    const archive = archiver("zip", { zlib: { level: 6 } });
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="bulk_allocations_${Date.now()}.zip"`);
+    archive.pipe(res);
+
+    for (const item of items) {
+      const { recordId, allocJson, po, productLabel, sizes, locations, allocation } = item;
+
+      // 1. Save allocation to Airtable
+      if (recordId && allocJson !== undefined) {
+        await updateRecord(recordId, { [AIRTABLE_FIELDS.ALLOC_FIELD]: allocJson });
+      }
+
+      // 2. Generate PDF
+      const pdfBuffer = await buildAllocationPdf({
+        username: "bulk",
+        po: po || "",
+        productLabel: productLabel || "",
+        sizes: sizes || [],
+        locations: locations || [],
+        allocation: allocation || {},
+        createdAtISO: new Date().toISOString()
+      });
+
+      const filename = `${safeName(po)}_${safeName(productLabel)}.pdf`;
+      archive.append(pdfBuffer, { name: filename });
+    }
+
+    archive.finalize();
+  } catch (e) {
+    // If headers not sent yet, send JSON error; otherwise just end
+    if (!res.headersSent) res.status(500).json({ error: e.message || "Bulk alloc error" });
+    else res.end();
   }
 });
 
