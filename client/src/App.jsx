@@ -548,6 +548,13 @@ export default function App() {
       return;
     }
 
+    // Sort alphabetically: by PO first, then by product label within the same PO
+    items.sort((a, b) => {
+      const poComp = (a.po || "").localeCompare(b.po || "");
+      if (poComp !== 0) return poComp;
+      return (a.productLabel || "").localeCompare(b.productLabel || "");
+    });
+
     try {
       setStatus("Saving allocations + generating PDFs…");
       const blob = await bulkAllocPdfs(items);
