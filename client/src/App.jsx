@@ -229,126 +229,17 @@ function pickPlan(total) {
 
 /**
  * Pure auto-allocation function. Same algorithm as the UI "Auto Allocate" button.
- * @param {object} record  - Airtable record with { buy, ship } per-size maps
- * @param {string[]} locations
- * @param {string[]} sizes
- * @param {boolean} ignoreTeaneck
- * @returns {object} allocation matrix { [loc]: { [size]: number } }
+ * Delegates to computeAllocation() from allocationEngine.js.
  */
 function computeAutoAlloc(record, locations, sizes, ignoreTeaneck = false) {
-  const built0 = emptyMatrix(locations, sizes);
-
-  const buy = {};
-  const ship = {};
-  for (const s of sizes) {
-    buy[s] = Number(record?.buy?.[s] ?? 0);
-    ship[s] = Number(record?.ship?.[s] ?? 0);
-  }
-
-  const avail = {};
-  for (const s of sizes) avail[s] = Math.min(buy[s], ship[s]);
-
-  const overage = {};
-  for (const s of sizes) overage[s] = Math.max(0, ship[s] - buy[s]);
-
-  const productHasXXS = Number(buy.XXS ?? 0) > 0 || Number(ship.XXS ?? 0) > 0;
-
-  let inv = { ...avail };
-
-  const addToLoc = (mat, loc, scale) => {
-    const out = structuredClone(mat);
-    for (const [sz, qty] of Object.entries(scale)) {
-      out[loc][sz] = Number(out?.[loc]?.[sz] ?? 0) + Number(qty ?? 0);
-    }
-    return out;
-  };
-
-  const buildDynamicPack = (pool) => {
-    if (computeMaxPacksAvailable(pool, PACK_CORE_NO_XL) < 1) return null;
-    const pack = { ...PACK_CORE_NO_XL };
-    if (Number(pool?.XL ?? 0) >= 1) pack.XL = 1;
-    if (productHasXXS && Number(pool?.XXS ?? 0) >= 1) pack.XXS = 1;
-    return pack;
-  };
-
-  const buildStarterPack = (pool) => {
-    if (Number(pool?.S ?? 0) < 1) return null;
-    const tryBuild = (need) => {
-      for (const [sz, qty] of Object.entries(need)) {
-        if (Number(pool?.[sz] ?? 0) < qty) return null;
-      }
-      return { ...need };
-    };
-    let pack = tryBuild(PACK_CORE_NO_XL);
-    if (!pack) pack = tryBuild({ XS: 3, S: 3, M: 2 });
-    if (!pack) pack = tryBuild({ XS: 3, S: 3, L: 1 });
-    if (!pack) pack = tryBuild({ S: 3, M: 2, L: 1 });
-    if (!pack) return null;
-    if (Number(pool?.XL ?? 0) >= 1) pack.XL = 1;
-    if (productHasXXS && Number(pool?.XXS ?? 0) >= 1) pack.XXS = 1;
-    return pack;
-  };
-
-  const packsReceived = Object.fromEntries(locations.map((l) => [l, 0]));
-  let built = built0;
-  let officeGiven = false;
-
-  for (let i = 0; i < PACK_SEQUENCE_1_TO_15.length; i++) {
-    let loc = PACK_SEQUENCE_1_TO_15[i];
-    if (ignoreTeaneck && loc === "Teaneck Store") loc = "Warehouse";
-    if (!locations.includes(loc)) continue;
-
-    if (!officeGiven && loc === "Bogota" && packsReceived["Bogota"] === 0 && locations.includes("Office")) {
-      if (Number(inv?.XS ?? 0) >= 1 && Number(inv?.S ?? 0) >= 1) {
-        built = addToLoc(built, "Office", { XS: 1, S: 1 });
-        inv = { ...inv, XS: inv.XS - 1, S: inv.S - 1 };
-        officeGiven = true;
-      }
-    }
-
-    const pack = buildDynamicPack(inv);
-    if (pack) {
-      built = addToLoc(built, loc, pack);
-      const nextInv = { ...inv };
-      for (const [sz, qty] of Object.entries(pack)) nextInv[sz] = Math.max(0, Number(nextInv?.[sz] ?? 0) - Number(qty ?? 0));
-      inv = nextInv;
-      packsReceived[loc] += 1;
-      continue;
-    }
-
-    if (packsReceived[loc] === 0) {
-      const starter = buildStarterPack(inv);
-      if (starter) {
-        built = addToLoc(built, loc, starter);
-        const nextInv = { ...inv };
-        for (const [sz, qty] of Object.entries(starter)) nextInv[sz] = Math.max(0, Number(nextInv?.[sz] ?? 0) - Number(qty ?? 0));
-        inv = nextInv;
-        packsReceived[loc] += 1;
-        continue;
-      }
-    }
-    break;
-  }
-
-  const sink = locations.includes("Warehouse") ? "Warehouse" : locations[0];
-  for (const s of sizes) built[sink][s] = Number(built?.[sink]?.[s] ?? 0) + Number(inv?.[s] ?? 0);
-  for (const s of sizes) built[sink][s] = Number(built?.[sink]?.[s] ?? 0) + Number(overage?.[s] ?? 0);
-
-  const removalOrder = ["Warehouse", "Teaneck Store", "Toms River", "Bogota", "Cedarhurst", "Office"].filter((l) => locations.includes(l));
-  for (const s of sizes) {
-    const totalAllocated = locations.reduce((a, loc) => a + Number(built?.[loc]?.[s] ?? 0), 0);
-    const cap = Number(ship?.[s] ?? 0);
-    if (totalAllocated <= cap) continue;
-    let excess = totalAllocated - cap;
-    for (const loc of removalOrder) {
-      if (excess <= 0) break;
-      const have = Number(built?.[loc]?.[s] ?? 0);
-      const take = Math.min(have, excess);
-      if (take > 0) { built[loc][s] = have - take; excess -= take; }
-    }
-  }
-
-  return built;
+  const { allocation } = computeAllocation({
+    buy: record?.buy || {},
+    ship: record?.ship || {},
+    locations,
+    sizes,
+    ignoreTeaneck
+  });
+  return allocation;
 }
 
 
