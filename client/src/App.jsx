@@ -13,8 +13,40 @@ import {
   shopifySearchByTitle,
   linkShopifyProduct,
   closeoutPdf,
-  allocationPdf
+  allocationPdf,
+  submitOfficeSample,
+  downloadSessionPdf
 } from "./api.js";
+
+// ---- Dynamsoft barcode scanner (Office Samples mode) ----
+const DYNAMSOFT_LICENSE = "DLS2eyJoYW5kc2hha2VDb2RlIjoiMTA0MzEyNTE0LTEwNDQ2Nzg3NCIsIm1haW5TZXJ2ZXJVUkwiOiJodHRwczovL21kbHMuZHluYW1zb2Z0b25saW5lLmNvbS8iLCJvcmdhbml6YXRpb25JRCI6IjEwNDMxMjUxNCIsInN0YW5kYnlTZXJ2ZXJVUkwiOiJodHRwczovL3NkbHMuZHluYW1zb2Z0b25saW5lLmNvbS8iLCJjaGVja0NvZGUiOjE5MzI1NzIzNDd9";
+
+async function launchDynamsoftScanner() {
+  if (typeof Dynamsoft === "undefined") throw new Error("Dynamsoft not loaded — check your internet connection.");
+  const scanner = new Dynamsoft.BarcodeScanner({
+    license: DYNAMSOFT_LICENSE,
+    barcodeFormats: [Dynamsoft.DBR.EnumBarcodeFormat.BF_ONED]
+  });
+  const result = await scanner.launch();
+  return result?.barcodeResults?.[0]?.text || null;
+}
+
+// Resize a data URL image to a max width (for session log thumbnails)
+function resizeImageDataUrl(dataUrl, maxWidth = 400, quality = 0.75) {
+  return new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, maxWidth / img.width);
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL("image/jpeg", quality));
+    };
+    img.onerror = () => resolve(dataUrl); // fallback: return original
+    img.src = dataUrl;
+  });
+}
 
 /**
  * Allocation rules (updated):
@@ -295,6 +327,52 @@ export default function App() {
   const [shopifySearch, setShopifySearch] = useState("");
   const [shopifySearchResults, setShopifySearchResults] = useState([]);
   const [shopifySelectedProductId, setShopifySelectedProductId] = useState("");
+
+  // ---- Office Samples mode (Mode 4) ----
+  const [osStep, setOsStep] = useState("photo"); // "photo" | "scan" | "po" | "done"
+  const [osPhoto, setOsPhoto] = useState(null);   // { base64, thumbBase64, filename, previewUrl }
+  const [osScanned, setOsScanned] = useState([]); // [{ size, inventoryItemId, barcode }]
+  const [osProduct, setOsProduct] = useState(null); // { productId, title, variants }
+  const [osPoInput, setOsPoInput] = useState("");
+  const [osDelivery, setOsDelivery] = useState("");
+  const [osRecord, setOsRecord] = useState(null); // matched Airtable record
+  const [osError, setOsError] = useState("");
+  const [osManualBarcode, setOsManualBarcode] = useState("");
+
+  // Session log: persisted to localStorage by date
+  const today = new Date().toISOString().slice(0, 10);
+  const [osLog, setOsLog] = useState(() => {
+    try {
+      const stored = localStorage.getItem(`os_log_${today}`);
+      return stored ? JSON.parse(stored) : [];
+    } catch { return []; }
+  });
+
+  function addToOsLog(entry) {
+    setOsLog((prev) => {
+      const next = [...prev, entry];
+      try { localStorage.setItem(`os_log_${today}`, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  }
+
+  function clearOsLog() {
+    if (!window.confirm("Clear the entire session log for today?")) return;
+    setOsLog([]);
+    try { localStorage.removeItem(`os_log_${today}`); } catch {}
+  }
+
+  function resetOsState() {
+    setOsStep("photo");
+    setOsPhoto(null);
+    setOsScanned([]);
+    setOsProduct(null);
+    setOsPoInput("");
+    setOsDelivery("");
+    setOsRecord(null);
+    setOsError("");
+    setOsManualBarcode("");
+  }
 
   // Derived
   const unitCost = Number(selected?.unitCost ?? 0);
@@ -903,6 +981,155 @@ async function onSubmitAllocationAndDownloadPdf() {
     }
   }
 
+  // ---------- Mode 4: Office Samples ----------
+
+  async function onOsPhotoCapture(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      const base64 = ev.target.result;
+      const thumbBase64 = await resizeImageDataUrl(base64, 400);
+      setOsPhoto({ base64, thumbBase64, filename: file.name || "photo.jpg", previewUrl: base64 });
+    };
+    reader.readAsDataURL(file);
+    // reset file input so same file can be re-selected
+    e.target.value = "";
+  }
+
+  async function processOsBarcode(barcode) {
+    if (!barcode) return;
+    // If product already identified, match variant directly
+    if (osProduct) {
+      const variant = osProduct.variants.find((v) => v.barcode === barcode);
+      if (!variant) throw new Error(`Barcode "${barcode}" is not from "${osProduct.title}". Scan a barcode from the same product.`);
+      const size = normalizeSizeValue(variant.sizeValue);
+      if (osScanned.find((v) => v.size === size)) throw new Error(`Size ${size} already scanned.`);
+      setOsScanned((prev) => [...prev, { size, inventoryItemId: variant.inventoryItemId, barcode }]);
+      return;
+    }
+    // First scan: identify product
+    const r = await shopifyByBarcode(barcode);
+    if (!r.found || !r.product) throw new Error(`Barcode "${barcode}" not found in Shopify.`);
+    const product = r.product;
+    const variant = product.variants.find((v) => v.barcode === barcode);
+    if (!variant) throw new Error("Variant not found in product.");
+    const size = normalizeSizeValue(variant.sizeValue);
+    setOsProduct(product);
+    setOsScanned([{ size, inventoryItemId: variant.inventoryItemId, barcode }]);
+  }
+
+  async function onOsCameraScan() {
+    setOsError("");
+    try {
+      setLoading(true);
+      const barcode = await launchDynamsoftScanner();
+      if (!barcode) { setOsError("No barcode detected. Try again."); return; }
+      await processOsBarcode(barcode);
+    } catch (e) {
+      setOsError(e.message || "Scanner error");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function onOsManualScan() {
+    const bc = osManualBarcode.trim();
+    if (!bc) return;
+    setOsError("");
+    setOsManualBarcode("");
+    try {
+      setLoading(true);
+      await processOsBarcode(bc);
+    } catch (e) {
+      setOsError(e.message);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function onOsLoadPO() {
+    const po = osPoInput.trim();
+    if (!po || !osProduct) return;
+    setOsError("");
+    try {
+      setLoading(true);
+      const data = await fetchPO(po);
+      const match = (data.records || []).find((r) => r.shopifyProductGid === osProduct.productId);
+      if (!match) {
+        setOsError(`No Airtable record in PO "${po}" matches "${osProduct.title}". Make sure the Shopify_Product_GID field is linked on this record.`);
+        setOsRecord(null);
+        return;
+      }
+      setOsRecord(match);
+      setOsDelivery(fmtDateForInput(match.delivery) || "");
+    } catch (e) {
+      setOsError(`PO load failed: ${e.message}`);
+      setOsRecord(null);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function onOsSubmit() {
+    if (!osRecord || !osPhoto || osScanned.length === 0) return;
+    setOsError("");
+    try {
+      setLoading(true);
+      setStatus("Submitting office sample…");
+
+      const result = await submitOfficeSample(osRecord.id, {
+        inventoryAdjustments: osScanned.map((v) => ({ inventoryItemId: v.inventoryItemId, delta: 1 })),
+        officeSentDate: today,
+        deliveryDate: osDelivery || undefined,
+        photoBase64: osPhoto.base64,
+        photoFilename: osPhoto.filename,
+        currentScanJson: osRecord.scanJson || null,
+        scannedSizes: osScanned.map((v) => v.size)
+      });
+
+      // Add to session log with thumbnail
+      addToOsLog({
+        productTitle: osProduct.title,
+        poNumber: osPoInput.trim(),
+        sizes: osScanned.map((v) => v.size),
+        thumbBase64: osPhoto.thumbBase64,
+        timestamp: new Date().toLocaleString()
+      });
+
+      const photoNote = result.photoUploadError ? " (photo upload to Airtable failed — saved in session log)" : "";
+      setStatus(`Office sample submitted${photoNote} ✅`);
+      setOsStep("done");
+    } catch (e) {
+      setOsError(`Submit failed: ${e.message}`);
+      setStatus(`Office sample submit failed: ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  async function onDownloadSessionPdf() {
+    if (!osLog.length) return;
+    try {
+      setLoading(true);
+      setStatus("Generating session PDF…");
+      const blob = await downloadSessionPdf(osLog, today);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `office_samples_${today}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setStatus("Session PDF downloaded ✅");
+    } catch (e) {
+      setStatus(`Session PDF failed: ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
   // ---------- Mode 3: Closeout ----------
   async function onCloseout() {
     if (!selectedId || !selected) return;
@@ -929,7 +1156,8 @@ async function onSubmitAllocationAndDownloadPdf() {
         locations,
         allocation: alloc,
         scanned: scan,
-        shopifyProduct: shopifyLinked ? shopifyProduct : null
+        shopifyProduct: shopifyLinked ? shopifyProduct : null,
+        officeAlreadySent: !!selected.officeSent
       };
 
       const pdfBlob = await closeoutPdf(payload);
@@ -1016,8 +1244,47 @@ async function onSubmitAllocationAndDownloadPdf() {
                 <button className="btn primary modeBtn" onClick={() => setMode("receiving")}>
                   3) Receiving
                 </button>
+                <button className="btn primary modeBtn" onClick={() => { setMode("office-samples"); resetOsState(); }}>
+                  4) Office Samples
+                </button>
                 <div className="hint">After picking a mode, load a PO and select a product.</div>
               </div>
+            ) : mode === "office-samples" ? (
+              <>
+                <div className="modeBar">
+                  <div className="modePill">Mode: <strong>Office Samples</strong></div>
+                  <button className="btn" onClick={() => { setMode(null); resetOsState(); }}>Change</button>
+                </div>
+                <div className="divider" />
+                <div className="hint" style={{ marginBottom: 12 }}>
+                  Photo → Scan barcodes → PO → Submit
+                </div>
+
+                {osLog.length > 0 && (
+                  <>
+                    <div className="divider" />
+                    <div className="label" style={{ marginBottom: 6 }}>Session Log</div>
+                    <div style={{ fontSize: 13, color: "#6b7280", marginBottom: 8 }}>
+                      {osLog.length} product{osLog.length === 1 ? "" : "s"} sent today
+                    </div>
+                    <button
+                      className="btn primary"
+                      onClick={onDownloadSessionPdf}
+                      disabled={loading}
+                      style={{ width: "100%", marginBottom: 6 }}
+                    >
+                      Download Session PDF
+                    </button>
+                    <button
+                      className="btn"
+                      onClick={clearOsLog}
+                      style={{ width: "100%" }}
+                    >
+                      Clear Session
+                    </button>
+                  </>
+                )}
+              </>
             ) : (
               <>
                 <div className="modeBar">
@@ -1171,10 +1438,37 @@ async function onSubmitAllocationAndDownloadPdf() {
                 <div className="emptyTitle">Choose a mode.</div>
                 <div className="emptyText">Shipping → Allocation → Receiving are separate screens so it stays simple.</div>
               </div>
+            ) : mode === "office-samples" ? (
+              <OfficeSamplesWizard
+                step={osStep}
+                photo={osPhoto}
+                scanned={osScanned}
+                product={osProduct}
+                poInput={osPoInput}
+                delivery={osDelivery}
+                record={osRecord}
+                error={osError}
+                loading={loading}
+                manualBarcode={osManualBarcode}
+                onPhotoCapture={onOsPhotoCapture}
+                onRetakePhoto={() => setOsPhoto(null)}
+                onNextToScan={() => setOsStep("scan")}
+                onCameraScan={onOsCameraScan}
+                onManualBarcodeChange={(v) => setOsManualBarcode(v)}
+                onManualScan={onOsManualScan}
+                onClearScanned={() => { setOsScanned([]); setOsProduct(null); setOsError(""); }}
+                onRemoveScanned={(size) => setOsScanned((prev) => prev.filter((v) => v.size !== size))}
+                onNextToPO={() => { setOsStep("po"); setOsError(""); }}
+                onPoInputChange={(v) => setOsPoInput(v)}
+                onLoadPO={onOsLoadPO}
+                onDeliveryChange={(v) => setOsDelivery(v)}
+                onSubmit={onOsSubmit}
+                onStartNext={() => { resetOsState(); }}
+              />
             ) : !selected ? (
               <div className="emptyState">
                 <div className="emptyTitle">Load a PO and select a product.</div>
-                <div className="emptyText">Then you’ll see the {mode} screen for that product.</div>
+                <div className="emptyText">Then you'll see the {mode} screen for that product.</div>
               </div>
             ) : (
               <>
@@ -1319,6 +1613,12 @@ async function onSubmitAllocationAndDownloadPdf() {
                   <>
                     <div className="sectionTitle">Mode 3 — Receiving</div>
                     <div className="hint">Select a location, then scan. The selected location stays visually obvious.</div>
+
+                    {selected.officeSent ? (
+                      <div className="banner info" style={{ marginBottom: 10 }}>
+                        Office samples sent on {fmtDateForInput(selected.officeSent)} — Office column pre-filled. Shopify Office inventory will NOT be re-adjusted at closeout.
+                      </div>
+                    ) : null}
 
                     <div className="locBar">
                       <div className="locTitle">Selected Location</div>
@@ -1615,6 +1915,215 @@ function ReceivingMatrixClean({ locations, sizes, alloc, scan, activeLoc, edit, 
           })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+/* ---------------- Office Samples Wizard ---------------- */
+
+function OfficeSamplesWizard({
+  step, photo, scanned, product, poInput, delivery, record, error, loading,
+  manualBarcode, onPhotoCapture, onRetakePhoto, onNextToScan, onCameraScan,
+  onManualBarcodeChange, onManualScan, onClearScanned, onRemoveScanned,
+  onNextToPO, onPoInputChange, onLoadPO, onDeliveryChange, onSubmit, onStartNext
+}) {
+  if (step === "done") {
+    return (
+      <div style={{ padding: "40px 24px", textAlign: "center" }}>
+        <div style={{ fontSize: 56, lineHeight: 1 }}>✓</div>
+        <div className="emptyTitle" style={{ marginTop: 16 }}>Office Sample Received!</div>
+        <div className="emptyText" style={{ marginTop: 8 }}>
+          Shopify Office inventory updated. Airtable record stamped with today's date.
+        </div>
+        <button
+          className="btn primary"
+          style={{ marginTop: 24, fontSize: 16, padding: "12px 28px" }}
+          onClick={onStartNext}
+        >
+          Start Next Product
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div style={{ maxWidth: 520, margin: "0 auto", padding: "0 4px" }}>
+      {/* Step indicator */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 20, flexWrap: "wrap" }}>
+        {[["photo", "1. Photo"], ["scan", "2. Scan"], ["po", "3. PO"]].map(([s, label]) => (
+          <span
+            key={s}
+            style={{
+              padding: "3px 10px",
+              borderRadius: 12,
+              fontSize: 12,
+              fontWeight: step === s ? 700 : 400,
+              background: step === s ? "var(--primary)" : "#f3f4f6",
+              color: step === s ? "#fff" : "#6b7280"
+            }}
+          >
+            {label}
+          </span>
+        ))}
+      </div>
+
+      {/* Step 1: Photo */}
+      {step === "photo" && (
+        <div>
+          <div className="sectionTitle">Step 1 — Take a Photo</div>
+          <div className="hint">Point your camera at the product so there is a visual record.</div>
+
+          {photo ? (
+            <div style={{ marginTop: 14 }}>
+              <img
+                src={photo.previewUrl}
+                alt="Product"
+                style={{ width: "100%", maxHeight: 300, objectFit: "contain", borderRadius: 12, border: "1px solid var(--border)" }}
+              />
+              <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                <button className="btn" onClick={onRetakePhoto}>Retake Photo</button>
+                <button className="btn primary" onClick={onNextToScan}>Next: Scan Barcodes</button>
+              </div>
+            </div>
+          ) : (
+            <div style={{ marginTop: 14 }}>
+              <label className="btn primary" style={{ display: "inline-block", cursor: "pointer" }}>
+                Open Camera
+                <input type="file" accept="image/*" capture="environment" style={{ display: "none" }} onChange={onPhotoCapture} />
+              </label>
+              <div className="hint" style={{ marginTop: 8 }}>On mobile, opens the rear camera. On desktop, opens a file picker.</div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Step 2: Scan */}
+      {step === "scan" && (
+        <div>
+          <div className="sectionTitle">Step 2 — Scan Size Barcodes</div>
+          <div className="hint">
+            Scan each size barcode one at a time (XS, then S).
+            {product ? <span> Product: <strong>{product.title}</strong></span> : " First scan identifies the product."}
+          </div>
+
+          {scanned.length > 0 && (
+            <div className="summaryPanel" style={{ marginTop: 12 }}>
+              <div className="summaryPanelTitle">Scanned Sizes</div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 8 }}>
+                {scanned.map((v) => (
+                  <span
+                    key={v.size}
+                    style={{ display: "flex", alignItems: "center", gap: 4, background: "var(--softOk)", borderRadius: 10, padding: "3px 10px", fontSize: 13 }}
+                  >
+                    {v.size}
+                    <button
+                      onClick={() => onRemoveScanned(v.size)}
+                      style={{ background: "none", border: "none", cursor: "pointer", color: "#6b7280", fontWeight: 700, padding: 0, lineHeight: 1 }}
+                      title="Remove"
+                    >x</button>
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {error && <div className="banner error" style={{ marginTop: 10 }}>{error}</div>}
+
+          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginTop: 14 }}>
+            <button className="btn primary" onClick={onCameraScan} disabled={loading}>
+              {loading ? "Scanning…" : "Scan with Camera"}
+            </button>
+            {scanned.length > 0 && (
+              <button className="btn" onClick={onClearScanned}>Clear All</button>
+            )}
+          </div>
+
+          <div style={{ marginTop: 12 }}>
+            <div className="label">Or type barcode manually</div>
+            <div className="hstack" style={{ marginTop: 4 }}>
+              <input
+                className="input"
+                value={manualBarcode}
+                onChange={(e) => onManualBarcodeChange(e.target.value)}
+                placeholder="Type or paste barcode…"
+                onKeyDown={(e) => { if (e.key === "Enter") onManualScan(); }}
+                disabled={loading}
+              />
+              <button className="btn" onClick={onManualScan} disabled={loading || !manualBarcode.trim()}>Add</button>
+            </div>
+          </div>
+
+          {scanned.length > 0 && (
+            <div style={{ marginTop: 16 }}>
+              <button className="btn primary" onClick={onNextToPO}>Next: Enter PO</button>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Step 3: PO + Delivery */}
+      {step === "po" && (
+        <div>
+          <div className="sectionTitle">Step 3 — PO Number</div>
+          <div className="hint">Find this product in Airtable and confirm the delivery date.</div>
+
+          <div className="field" style={{ marginTop: 14 }}>
+            <div className="label">PO #</div>
+            <div className="hstack">
+              <input
+                className="input"
+                value={poInput}
+                onChange={(e) => onPoInputChange(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") onLoadPO(); }}
+                placeholder="e.g. YB1892"
+                disabled={loading}
+              />
+              <button className="btn primary" onClick={onLoadPO} disabled={loading || !poInput.trim()}>
+                {loading ? "Loading…" : "Load"}
+              </button>
+            </div>
+          </div>
+
+          {error && <div className="banner error" style={{ marginTop: 8 }}>{error}</div>}
+
+          {record && (
+            <>
+              <div className="summaryPanel" style={{ marginTop: 12 }}>
+                <div className="summaryPanelTitle">{record.label}</div>
+                <div className="hint" style={{ marginTop: 4 }}>
+                  Sizes to send to Office: <strong>{scanned.map((v) => v.size).join(", ")}</strong>
+                </div>
+              </div>
+
+              <div className="field" style={{ marginTop: 12 }}>
+                <div className="label">Delivery Date</div>
+                <input
+                  className="dateBig"
+                  type="date"
+                  value={delivery}
+                  onChange={(e) => onDeliveryChange(e.target.value)}
+                />
+              </div>
+
+              {photo && (
+                <div style={{ marginTop: 10 }}>
+                  <img
+                    src={photo.previewUrl}
+                    alt="Product"
+                    style={{ width: 80, height: 80, objectFit: "cover", borderRadius: 8, border: "1px solid var(--border)" }}
+                  />
+                </div>
+              )}
+
+              <div style={{ marginTop: 16 }}>
+                <button className="btn primary" onClick={onSubmit} disabled={loading} style={{ fontSize: 15, padding: "10px 24px" }}>
+                  {loading ? "Submitting…" : "Submit to Office"}
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
     </div>
   );
 }

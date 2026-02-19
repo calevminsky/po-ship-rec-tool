@@ -122,6 +122,34 @@ export async function closeoutPdf(payload) {
   return await r.blob();
 }
 
+export async function submitOfficeSample(recordId, payload) {
+  const r = await fetch(`/api/record/${encodeURIComponent(recordId)}/office-sample`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || "Office sample submit failed");
+  return j;
+}
+
+export async function downloadSessionPdf(entries, reportDate) {
+  const r = await fetch("/api/office-samples/session-pdf", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ entries, reportDate })
+  });
+  if (!r.ok) {
+    let msg = "Session PDF failed";
+    try {
+      const j = await r.json();
+      msg = j.error || msg;
+    } catch {}
+    throw new Error(msg);
+  }
+  return await r.blob();
+}
+
 export async function allocationPdf(payload) {
   const r = await fetch("/api/allocation-pdf", {
     method: "POST",
