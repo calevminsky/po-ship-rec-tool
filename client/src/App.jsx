@@ -18,6 +18,7 @@ import {
   downloadSessionPdf,
   bulkAllocPdfs
 } from "./api.js";
+import { computeAllocation } from "./allocationEngine";
 
 // ---- Dynamsoft barcode scanner (Office Samples mode) ----
 const DYNAMSOFT_LICENSE = "DLS2eyJoYW5kc2hha2VDb2RlIjoiMTA0MzEyNTE0LTEwNDQ2Nzg3NCIsIm1haW5TZXJ2ZXJVUkwiOiJodHRwczovL21kbHMuZHluYW1zb2Z0b25saW5lLmNvbS8iLCJvcmdhbml6YXRpb25JRCI6IjEwNDMxMjUxNCIsInN0YW5kYnlTZXJ2ZXJVUkwiOiJodHRwczovL3NkbHMuZHluYW1zb2Z0b25saW5lLmNvbS8iLCJjaGVja0NvZGUiOjE5MzI1NzIzNDd9";
@@ -53,46 +54,43 @@ function resizeImageDataUrl(dataUrl, maxWidth = 400, quality = 0.75) {
  * Allocation rules (updated):
  * - Allocation is based on BUY total.
  * - Overage (ship - buy) goes to Warehouse.
- * - Packs:
- *   - With XXS: 1,3,3,2,1,1 (XXS-XL) = 11
- *   - No XXS:  3,3,2,1,1 (XS-XL) = 10
- * - Office: 1 XS to Office first (if XS available).
- * - Ignore Teaneck: exclude Teaneck from store pack distribution (its would-be packs go to Warehouse).
+ * - Packs are built from inv = min(buy, ship).
+ * - Office rule (ONLY rule):
+ *   - On Bogota’s FIRST successful pack, move 1 XS + 1 S FROM Bogota allocation to Office (if possible).
+ * - Ignore Teaneck:
+ *   - exclude Teaneck from store pack distribution (its would-be packs go to Warehouse).
  */
-
 
 // Pack sequence (1..15). After 15 packs, remainder goes to Warehouse.
 const PACK_SEQUENCE_1_TO_15 = [
-  "Cedarhurst",   // 1
-  "Cedarhurst",   // 2
-  "Bogota",       // 3
-  "Bogota",       // 4
-  "Toms River",   // 5
-  "Teaneck Store",// 6
-  "Cedarhurst",   // 7
-  "Bogota",       // 8
-  "Toms River",   // 9
-  "Cedarhurst",   // 10
-  "Warehouse",    // 11
-  "Warehouse",    // 12
-  "Bogota",       // 13
-  "Cedarhurst",   // 14
-  "Warehouse"     // 15
+  "Cedarhurst", // 1
+  "Cedarhurst", // 2
+  "Bogota", // 3
+  "Bogota", // 4
+  "Toms River", // 5
+  "Teaneck Store", // 6
+  "Cedarhurst", // 7
+  "Bogota", // 8
+  "Toms River", // 9
+  "Cedarhurst", // 10
+  "Warehouse", // 11
+  "Warehouse", // 12
+  "Bogota", // 13
+  "Cedarhurst", // 14
+  "Warehouse" // 15
 ];
-const PACK_CORE_NO_XL = { XS: 3, S: 3, M: 2, L: 1 }; // 9 units (XL optional, XXS optional)
 
+const PACK_CORE_NO_XL = { XS: 3, S: 3, M: 2, L: 1 }; // 9 units (XL optional, XXS optional)
 
 const SIZES = ["XXS", "XS", "S", "M", "L", "XL"];
 const DEFAULT_LOCATIONS = ["Bogota", "Cedarhurst", "Toms River", "Teaneck Store", "Office", "Warehouse"];
 
+// (Not currently used by the allocator below, but leaving in place)
 const PACK_WITH_XXS = { XXS: 1, XS: 3, S: 3, M: 2, L: 1, XL: 1 }; // 11
 const PACK_NO_XXS = { XS: 3, S: 3, M: 2, L: 1, XL: 1 }; // 10
-
-// You can tweak priority if sizes are too tight to fulfill all planned packs
 const STORE_PACK_PRIORITY = ["Cedarhurst", "Bogota", "Toms River", "Teaneck Store"];
 
-// Pack plan “shape”. These are examples and can be tuned.
-// Key is buy total (after office XS removed is effectively handled automatically).
+// (Not currently used by the allocator below, but leaving in place)
 const PACK_PLAN_NO_XXS = [
   { minTotal: 200, packs: { Bogota: 4, Cedarhurst: 5, "Toms River": 2, "Teaneck Store": 1, Warehouse: 8 } },
   { minTotal: 190, packs: { Bogota: 4, Cedarhurst: 5, "Toms River": 2, "Teaneck Store": 1, Warehouse: 7 } },
@@ -105,18 +103,16 @@ const PACK_PLAN_NO_XXS = [
   { minTotal: 120, packs: { Bogota: 4, Cedarhurst: 5, "Toms River": 2, "Teaneck Store": 1, Warehouse: 0 } },
   { minTotal: 110, packs: { Bogota: 3, Cedarhurst: 5, "Toms River": 2, "Teaneck Store": 1, Warehouse: 0 } },
   { minTotal: 100, packs: { Bogota: 3, Cedarhurst: 4, "Toms River": 2, "Teaneck Store": 1, Warehouse: 0 } },
-  { minTotal: 90,  packs: { Bogota: 3, Cedarhurst: 3, "Toms River": 2, "Teaneck Store": 1, Warehouse: 0 } },
-  { minTotal: 80,  packs: { Bogota: 3, Cedarhurst: 3, "Toms River": 1, "Teaneck Store": 1, Warehouse: 0 } },
-  { minTotal: 70,  packs: { Bogota: 2, Cedarhurst: 3, "Toms River": 1, "Teaneck Store": 1, Warehouse: 0 } },
-  { minTotal: 60,  packs: { Bogota: 2, Cedarhurst: 2, "Toms River": 1, "Teaneck Store": 1, Warehouse: 0 } }
+  { minTotal: 90, packs: { Bogota: 3, Cedarhurst: 3, "Toms River": 2, "Teaneck Store": 1, Warehouse: 0 } },
+  { minTotal: 80, packs: { Bogota: 3, Cedarhurst: 3, "Toms River": 1, "Teaneck Store": 1, Warehouse: 0 } },
+  { minTotal: 70, packs: { Bogota: 2, Cedarhurst: 3, "Toms River": 1, "Teaneck Store": 1, Warehouse: 0 } },
+  { minTotal: 60, packs: { Bogota: 2, Cedarhurst: 2, "Toms River": 1, "Teaneck Store": 1, Warehouse: 0 } }
 ];
 
-
-
 const PACK_PLAN_WITH_XXS = [
-  { minTotal: 154, packs: { Bogota: 3, Cedarhurst: 4, "Toms River": 2, "Teaneck Store": 1 } }, // 10 packs * 11 = 110, leftover->WH
-  { minTotal: 88, packs: { Bogota: 2, Cedarhurst: 3, "Toms River": 1, "Teaneck Store": 2 } }, // 8 packs * 11 = 88
-  { minTotal: 66, packs: { Bogota: 2, Cedarhurst: 2, "Toms River": 1, "Teaneck Store": 1 } } // 6 packs * 11 = 66
+  { minTotal: 154, packs: { Bogota: 3, Cedarhurst: 4, "Toms River": 2, "Teaneck Store": 1 } },
+  { minTotal: 88, packs: { Bogota: 2, Cedarhurst: 3, "Toms River": 1, "Teaneck Store": 2 } },
+  { minTotal: 66, packs: { Bogota: 2, Cedarhurst: 2, "Toms River": 1, "Teaneck Store": 1 } }
 ];
 
 function clampInt(v) {
@@ -194,7 +190,6 @@ function sumPerSize(obj, sizes) {
 
 /**
  * Try to build N full packs from available inventoryBySize.
- * Returns { builtPacks, usedBySize }.
  */
 function computeMaxPacksAvailable(inventoryBySize, packScale) {
   let max = Infinity;
@@ -225,9 +220,9 @@ function addPackToMatrix(matrix, loc, packScale, packsCount = 1) {
 
 function pickPlan(total) {
   const plans = PACK_PLAN_NO_XXS;
-  const FUDGE = 2; // within a couple units (79 uses the 80 grid)
+  const FUDGE = 2;
   for (const p of plans) {
-    if (total >= (p.minTotal - FUDGE)) return p.packs;
+    if (total >= p.minTotal - FUDGE) return p.packs;
   }
   return plans[plans.length - 1]?.packs || {};
 }
@@ -751,7 +746,7 @@ export default function App() {
   }
 
   // ---------- Mode 2: Auto Allocate (pack-based, BUY-based) ----------
-function onAutoAllocate() {
+  function onAutoAllocate() {
   if (!selected) return;
   // Build a synthetic record using current ship edits (user may have changed them)
   const recordForAlloc = { buy: selected.buy, ship: shipTotalsBySize };
@@ -768,7 +763,9 @@ function onAutoAllocate() {
       const diffs = diffPerSize(allocTotalsBySize, shipTotalsBySize, sizes);
       const msg =
         "Allocation totals do not match Ship Units.\n\n" +
-        sizes.map((s) => `${s}: alloc ${allocTotalsBySize[s]} vs ship ${shipTotalsBySize[s]} (diff ${diffs[s]})`).join("\n") +
+        sizes
+          .map((s) => `${s}: alloc ${allocTotalsBySize[s]} vs ship ${shipTotalsBySize[s]} (diff ${diffs[s]})`)
+          .join("\n") +
         "\n\nSubmit anyway?";
       const ok = window.confirm(msg);
       if (!ok) return;
@@ -785,49 +782,49 @@ function onAutoAllocate() {
       setLoading(false);
     }
   }
-async function onSubmitAllocationAndDownloadPdf() {
-  if (!selectedId || !selected) return;
 
-  if (!allocMatchesShip) {
-    const ok = window.confirm("Allocation does NOT match Ship Units.\n\nSubmit + PDF anyway?");
-    if (!ok) return;
+  async function onSubmitAllocationAndDownloadPdf() {
+    if (!selectedId || !selected) return;
+
+    if (!allocMatchesShip) {
+      const ok = window.confirm("Allocation does NOT match Ship Units.\n\nSubmit + PDF anyway?");
+      if (!ok) return;
+    }
+
+    try {
+      setLoading(true);
+      setStatus("Submitting allocation… Generating Allocation PDF…");
+
+      // Save allocation first (so Airtable is in sync)
+      await saveAllocation(selectedId, alloc);
+
+      const payload = {
+        recordId: selectedId,
+        po: poData?.po || "",
+        productLabel: selected.label,
+        sizes,
+        locations,
+        allocation: alloc
+      };
+
+      const pdfBlob = await allocationPdf(payload);
+
+      const url = URL.createObjectURL(pdfBlob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `allocation_${poData?.po || "PO"}_${Date.now()}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+
+      setStatus("Allocation submitted ✅ Allocation PDF downloaded.");
+    } catch (e) {
+      setStatus(`Allocation submit/PDF failed: ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
   }
-
-  try {
-    setLoading(true);
-    setStatus("Submitting allocation… Generating Allocation PDF…");
-
-    // Save allocation first (so Airtable is in sync)
-    await saveAllocation(selectedId, alloc);
-
-    const payload = {
-      recordId: selectedId,
-      po: poData?.po || "",
-      productLabel: selected.label,
-      sizes,
-      locations,
-      allocation: alloc
-    };
-
-    const pdfBlob = await allocationPdf(payload);
-
-    const url = URL.createObjectURL(pdfBlob);
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = `allocation_${poData?.po || "PO"}_${Date.now()}.pdf`;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    URL.revokeObjectURL(url);
-
-    setStatus("Allocation submitted ✅ Allocation PDF downloaded.");
-  } catch (e) {
-    setStatus(`Allocation submit/PDF failed: ${e.message}`);
-  } finally {
-    setLoading(false);
-  }
-}
-
 
   // ---------- Shopify: Link by barcode ----------
   async function onLinkShopifyAndPersist() {
@@ -1322,9 +1319,7 @@ async function onSubmitAllocationAndDownloadPdf() {
                 <div className="modeBar">
                   <div className="modePill">
                     Mode:{" "}
-                    <strong>
-                      {mode === "shipping" ? "Shipping" : mode === "allocation" ? "Allocation" : "Receiving"}
-                    </strong>
+                    <strong>{mode === "shipping" ? "Shipping" : mode === "allocation" ? "Allocation" : "Receiving"}</strong>
                   </div>
                   <button className="btn" onClick={() => setMode(null)}>
                     Change
@@ -1610,11 +1605,7 @@ async function onSubmitAllocationAndDownloadPdf() {
                       </button>
 
                       <label style={{ display: "inline-flex", alignItems: "center", gap: 6, marginLeft: 10 }}>
-                        <input
-                          type="checkbox"
-                          checked={ignoreTeaneck}
-                          onChange={(e) => setIgnoreTeaneck(e.target.checked)}
-                        />
+                        <input type="checkbox" checked={ignoreTeaneck} onChange={(e) => setIgnoreTeaneck(e.target.checked)} />
                         Ignore Teaneck
                       </label>
 
@@ -1638,14 +1629,9 @@ async function onSubmitAllocationAndDownloadPdf() {
                       <button className="btn primary" onClick={onSaveAllocation} disabled={loading || !selectedId} type="button">
                         Submit Allocation
                       </button>
-                      <button
-  className="btn primary"
-  onClick={onSubmitAllocationAndDownloadPdf}
-  disabled={loading || !selectedId}
->
-  Submit + Download Allocation PDF
-</button>
-
+                      <button className="btn primary" onClick={onSubmitAllocationAndDownloadPdf} disabled={loading || !selectedId}>
+                        Submit + Download Allocation PDF
+                      </button>
                     </div>
                   </>
                 ) : null}
