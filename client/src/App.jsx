@@ -15,7 +15,8 @@ import {
   closeoutPdf,
   allocationPdf,
   submitOfficeSample,
-  downloadSessionPdf
+  downloadSessionPdf,
+  bulkAllocPdfs
 } from "./api.js";
 import { computeAllocation } from "./allocationEngine";
 
@@ -226,6 +227,132 @@ function pickPlan(total) {
   return plans[plans.length - 1]?.packs || {};
 }
 
+/**
+ * Pure auto-allocation function. Same algorithm as the UI "Auto Allocate" button.
+ * @param {object} record  - Airtable record with { buy, ship } per-size maps
+ * @param {string[]} locations
+ * @param {string[]} sizes
+ * @param {boolean} ignoreTeaneck
+ * @returns {object} allocation matrix { [loc]: { [size]: number } }
+ */
+function computeAutoAlloc(record, locations, sizes, ignoreTeaneck = false) {
+  const built0 = emptyMatrix(locations, sizes);
+
+  const buy = {};
+  const ship = {};
+  for (const s of sizes) {
+    buy[s] = Number(record?.buy?.[s] ?? 0);
+    ship[s] = Number(record?.ship?.[s] ?? 0);
+  }
+
+  const avail = {};
+  for (const s of sizes) avail[s] = Math.min(buy[s], ship[s]);
+
+  const overage = {};
+  for (const s of sizes) overage[s] = Math.max(0, ship[s] - buy[s]);
+
+  const productHasXXS = Number(buy.XXS ?? 0) > 0 || Number(ship.XXS ?? 0) > 0;
+
+  let inv = { ...avail };
+
+  const addToLoc = (mat, loc, scale) => {
+    const out = structuredClone(mat);
+    for (const [sz, qty] of Object.entries(scale)) {
+      out[loc][sz] = Number(out?.[loc]?.[sz] ?? 0) + Number(qty ?? 0);
+    }
+    return out;
+  };
+
+  const buildDynamicPack = (pool) => {
+    if (computeMaxPacksAvailable(pool, PACK_CORE_NO_XL) < 1) return null;
+    const pack = { ...PACK_CORE_NO_XL };
+    if (Number(pool?.XL ?? 0) >= 1) pack.XL = 1;
+    if (productHasXXS && Number(pool?.XXS ?? 0) >= 1) pack.XXS = 1;
+    return pack;
+  };
+
+  const buildStarterPack = (pool) => {
+    if (Number(pool?.S ?? 0) < 1) return null;
+    const tryBuild = (need) => {
+      for (const [sz, qty] of Object.entries(need)) {
+        if (Number(pool?.[sz] ?? 0) < qty) return null;
+      }
+      return { ...need };
+    };
+    let pack = tryBuild(PACK_CORE_NO_XL);
+    if (!pack) pack = tryBuild({ XS: 3, S: 3, M: 2 });
+    if (!pack) pack = tryBuild({ XS: 3, S: 3, L: 1 });
+    if (!pack) pack = tryBuild({ S: 3, M: 2, L: 1 });
+    if (!pack) return null;
+    if (Number(pool?.XL ?? 0) >= 1) pack.XL = 1;
+    if (productHasXXS && Number(pool?.XXS ?? 0) >= 1) pack.XXS = 1;
+    return pack;
+  };
+
+  const packsReceived = Object.fromEntries(locations.map((l) => [l, 0]));
+  let built = built0;
+  let officeGiven = false;
+
+  for (let i = 0; i < PACK_SEQUENCE_1_TO_15.length; i++) {
+    let loc = PACK_SEQUENCE_1_TO_15[i];
+    if (ignoreTeaneck && loc === "Teaneck Store") loc = "Warehouse";
+    if (!locations.includes(loc)) continue;
+
+    if (!officeGiven && loc === "Bogota" && packsReceived["Bogota"] === 0 && locations.includes("Office")) {
+      if (Number(inv?.XS ?? 0) >= 1 && Number(inv?.S ?? 0) >= 1) {
+        built = addToLoc(built, "Office", { XS: 1, S: 1 });
+        inv = { ...inv, XS: inv.XS - 1, S: inv.S - 1 };
+        officeGiven = true;
+      }
+    }
+
+    const pack = buildDynamicPack(inv);
+    if (pack) {
+      built = addToLoc(built, loc, pack);
+      const nextInv = { ...inv };
+      for (const [sz, qty] of Object.entries(pack)) nextInv[sz] = Math.max(0, Number(nextInv?.[sz] ?? 0) - Number(qty ?? 0));
+      inv = nextInv;
+      packsReceived[loc] += 1;
+      continue;
+    }
+
+    if (packsReceived[loc] === 0) {
+      const starter = buildStarterPack(inv);
+      if (starter) {
+        built = addToLoc(built, loc, starter);
+        const nextInv = { ...inv };
+        for (const [sz, qty] of Object.entries(starter)) nextInv[sz] = Math.max(0, Number(nextInv?.[sz] ?? 0) - Number(qty ?? 0));
+        inv = nextInv;
+        packsReceived[loc] += 1;
+        continue;
+      }
+    }
+    break;
+  }
+
+  const sink = locations.includes("Warehouse") ? "Warehouse" : locations[0];
+  for (const s of sizes) built[sink][s] = Number(built?.[sink]?.[s] ?? 0) + Number(inv?.[s] ?? 0);
+  for (const s of sizes) built[sink][s] = Number(built?.[sink]?.[s] ?? 0) + Number(overage?.[s] ?? 0);
+
+  const removalOrder = ["Warehouse", "Teaneck Store", "Toms River", "Bogota", "Cedarhurst", "Office"].filter((l) => locations.includes(l));
+  for (const s of sizes) {
+    const totalAllocated = locations.reduce((a, loc) => a + Number(built?.[loc]?.[s] ?? 0), 0);
+    const cap = Number(ship?.[s] ?? 0);
+    if (totalAllocated <= cap) continue;
+    let excess = totalAllocated - cap;
+    for (const loc of removalOrder) {
+      if (excess <= 0) break;
+      const have = Number(built?.[loc]?.[s] ?? 0);
+      const take = Math.min(have, excess);
+      if (take > 0) { built[loc][s] = have - take; excess -= take; }
+    }
+  }
+
+  return built;
+}
+
+
+
 export default function App() {
   // ---------- AUTH ----------
   const [authChecked, setAuthChecked] = useState(false);
@@ -365,6 +492,80 @@ export default function App() {
     setOsRecord(null);
     setOsError("");
     setOsManualBarcode("");
+  }
+
+  // ---- Bulk Allocation mode (Mode 5) ----
+  const [baPOText, setBaPOText] = useState("");
+  const [baLog, setBaLog] = useState([]); // [{ po, label, status, error }]
+  const [baRunning, setBaRunning] = useState(false);
+  const [baIgnoreTeaneck, setBaIgnoreTeaneck] = useState(false);
+  const [baZipReady, setBaZipReady] = useState(false);
+
+  function baAddLog(entry) { setBaLog((p) => [...p, entry]); }
+
+  async function onRunBulkAlloc() {
+    const poList = baPOText
+      .split(/[\n,]+/)
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+    if (!poList.length) return;
+
+    setBaLog([]);
+    setBaZipReady(false);
+    setBaRunning(true);
+    setStatus(`Bulk allocation: processing ${poList.length} PO(s)…`);
+
+    const items = [];
+
+    for (const po of poList) {
+      try {
+        const data = await fetchPO(po);
+        const recs = data.records || [];
+        if (!recs.length) { baAddLog({ po, label: "", status: "error", error: "No records found" }); continue; }
+
+        for (const rec of recs) {
+          const alloc = computeAutoAlloc(rec, locations, sizes, baIgnoreTeaneck);
+          items.push({
+            recordId: rec.id,
+            allocJson: JSON.stringify(alloc),
+            po,
+            productLabel: rec.label,
+            sizes,
+            locations,
+            allocation: alloc
+          });
+          baAddLog({ po, label: rec.label, status: "ok", error: null });
+        }
+      } catch (e) {
+        baAddLog({ po, label: "", status: "error", error: e.message });
+      }
+    }
+
+    if (!items.length) {
+      setStatus("Bulk allocation: no valid items to process.");
+      setBaRunning(false);
+      return;
+    }
+
+    try {
+      setStatus("Saving allocations + generating PDFs…");
+      const blob = await bulkAllocPdfs(items);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `bulk_allocations_${Date.now()}.zip`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setBaZipReady(true);
+      setStatus(`Bulk allocation complete ✅ ${items.length} PDF(s) downloaded.`);
+    } catch (e) {
+      setStatus(`Bulk allocation PDF/save failed: ${e.message}`);
+    } finally {
+      setBaRunning(false);
+    }
   }
 
   // Derived
@@ -547,26 +748,12 @@ export default function App() {
   // ---------- Mode 2: Auto Allocate (pack-based, BUY-based) ----------
   function onAutoAllocate() {
   if (!selected) return;
-
-  const buy = {};
-  const ship = {};
-  for (const s of sizes) {
-    buy[s] = Number(selected?.buy?.[s] ?? 0);
-    ship[s] = Number(shipTotalsBySize?.[s] ?? 0);
-  }
-
-  const { allocation } = computeAllocation({
-    buy,
-    ship,
-    locations,
-    sizes,
-    ignoreTeaneck
-  });
-
-  setAlloc(allocation);
-  setStatus("Auto Allocated ✅");
+  // Build a synthetic record using current ship edits (user may have changed them)
+  const recordForAlloc = { buy: selected.buy, ship: shipTotalsBySize };
+  const built = computeAutoAlloc(recordForAlloc, locations, sizes, ignoreTeaneck);
+  setAlloc(built);
+  setStatus("Auto Allocated ✅ Pack-sequence allocator applied.");
 }
-
 
   // ---------- Mode 2: Save Allocation ----------
   async function onSaveAllocation() {
@@ -1074,12 +1261,23 @@ export default function App() {
                 <button className="btn primary modeBtn" onClick={() => { setMode("office-samples"); resetOsState(); }}>
                   4) Office Samples
                 </button>
-                <button className="btn primary modeBtn" onClick={() => setMode("bulk")}>
+                <button className="btn primary modeBtn" onClick={() => { setMode("bulk-allocation"); setBaLog([]); setBaZipReady(false); }}>
                   5) Bulk Allocation
                 </button>
-
                 <div className="hint">After picking a mode, load a PO and select a product.</div>
               </div>
+            ) : mode === "bulk-allocation" ? (
+              <>
+                <div className="modeBar">
+                  <div className="modePill">Mode: <strong>Bulk Allocation</strong></div>
+                  <button className="btn" onClick={() => setMode(null)}>Change</button>
+                </div>
+                <div className="divider" />
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
+                  <input type="checkbox" checked={baIgnoreTeaneck} onChange={(e) => setBaIgnoreTeaneck(e.target.checked)} />
+                  Ignore Teaneck
+                </label>
+              </>
             ) : mode === "office-samples" ? (
               <>
                 <div className="modeBar">
@@ -1267,6 +1465,15 @@ export default function App() {
                 <div className="emptyTitle">Choose a mode.</div>
                 <div className="emptyText">Shipping → Allocation → Receiving are separate screens so it stays simple.</div>
               </div>
+            ) : mode === "bulk-allocation" ? (
+              <BulkAllocationPanel
+                poText={baPOText}
+                onPoTextChange={setBaPOText}
+                onRun={onRunBulkAlloc}
+                running={baRunning}
+                log={baLog}
+                zipReady={baZipReady}
+              />
             ) : mode === "office-samples" ? (
               <OfficeSamplesWizard
                 step={osStep}
@@ -1735,6 +1942,77 @@ function ReceivingMatrixClean({ locations, sizes, alloc, scan, activeLoc, edit, 
           })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+/* ---------------- Bulk Allocation Panel ---------------- */
+
+function BulkAllocationPanel({ poText, onPoTextChange, onRun, running, log, zipReady }) {
+  const total = log.length;
+  const errors = log.filter((l) => l.status === "error").length;
+  const ok = log.filter((l) => l.status === "ok").length;
+
+  return (
+    <div style={{ maxWidth: 600 }}>
+      <div className="sectionTitle">Mode 5 — Bulk Allocation</div>
+      <div className="hint">
+        Paste PO numbers below (one per line or comma-separated). The auto-allocation algorithm
+        will run on every product in each PO, save to Airtable, and bundle all PDFs into a zip.
+      </div>
+
+      <div style={{ marginTop: 16 }}>
+        <textarea
+          className="input"
+          value={poText}
+          onChange={(e) => onPoTextChange(e.target.value)}
+          placeholder={"YB1892\nYB1893\nYB1894"}
+          rows={8}
+          style={{ width: "100%", fontFamily: "monospace", fontSize: 14, resize: "vertical" }}
+          disabled={running}
+        />
+      </div>
+
+      <div style={{ marginTop: 10 }}>
+        <button
+          className="btn primary"
+          onClick={onRun}
+          disabled={running || !poText.trim()}
+          style={{ fontSize: 15, padding: "10px 24px" }}
+        >
+          {running ? "Running…" : "Run Allocation + Download ZIP"}
+        </button>
+      </div>
+
+      {log.length > 0 && (
+        <div style={{ marginTop: 20 }}>
+          <div className="summaryPanelTitle" style={{ marginBottom: 8 }}>
+            Results — {ok} ok{errors ? `, ${errors} error${errors > 1 ? "s" : ""}` : ""} of {total}
+            {zipReady ? " — ZIP downloaded ✅" : ""}
+          </div>
+          <div style={{ maxHeight: 320, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13 }}>
+            {log.map((entry, i) => (
+              <div
+                key={i}
+                style={{
+                  display: "flex",
+                  alignItems: "flex-start",
+                  gap: 8,
+                  padding: "7px 12px",
+                  borderBottom: i < log.length - 1 ? "1px solid var(--border)" : "none",
+                  background: entry.status === "error" ? "var(--softBad)" : i % 2 === 0 ? "#fff" : "#f9fafb"
+                }}
+              >
+                <span style={{ fontSize: 16, lineHeight: 1.4 }}>{entry.status === "ok" ? "✓" : "✗"}</span>
+                <div>
+                  <div style={{ fontWeight: 600 }}>{entry.po}{entry.label ? ` — ${entry.label}` : ""}</div>
+                  {entry.error && <div style={{ color: "var(--bad)", marginTop: 2 }}>{entry.error}</div>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </div>
   );
 }

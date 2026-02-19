@@ -122,6 +122,20 @@ export async function closeoutPdf(payload) {
   return await r.blob();
 }
 
+export async function bulkAllocPdfs(items) {
+  const r = await fetch("/api/bulk-alloc", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ items })
+  });
+  if (!r.ok) {
+    let msg = "Bulk allocation failed";
+    try { const j = await r.json(); msg = j.error || msg; } catch {}
+    throw new Error(msg);
+  }
+  return await r.blob();
+}
+
 export async function submitOfficeSample(recordId, payload) {
   const r = await fetch(`/api/record/${encodeURIComponent(recordId)}/office-sample`, {
     method: "PATCH",

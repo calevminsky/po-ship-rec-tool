@@ -2,6 +2,7 @@ import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import cookieParser from "cookie-parser";
+import archiver from "archiver";
 
 import { listRecordsByPO, updateRecord, getSizes, AIRTABLE_FIELDS } from "./airtable.js";
 import {
@@ -375,47 +376,41 @@ app.post("/api/allocation-pdf", requireAuth, async (req, res) => {
 });
 
 // ---- Office Samples: upload photo to Airtable attachment field ----
-// ---- Office Samples: upload photo to Airtable attachment field ----
 // We temporarily serve the image from our own server so Airtable can fetch it
 // by URL — this avoids needing the internal field ID required by content.airtable.com.
 const _tempPhotos = new Map(); // id -> { buffer, contentType, expires }
+
 app.get("/api/temp-photo/:id", (req, res) => {
   const entry = _tempPhotos.get(req.params.id);
   if (!entry || entry.expires < Date.now()) return res.status(404).send("Not found");
   res.setHeader("Content-Type", entry.contentType);
   res.send(entry.buffer);
 });
+
 async function uploadPhotoToAirtable(recordId, photoBase64, photoFilename) {
   if (!photoBase64) return;
+
   const APP_URL = process.env.APP_URL;
   if (!APP_URL) throw new Error("APP_URL env var not set — cannot upload photo to Airtable.");
+
   const commaIdx = photoBase64.indexOf(",");
   const b64 = commaIdx >= 0 ? photoBase64.slice(commaIdx + 1) : photoBase64;
   const mimeMatch = photoBase64.match(/data:([^;]+);/);
   const contentType = mimeMatch ? mimeMatch[1] : "image/jpeg";
   const buffer = Buffer.from(b64, "base64");
+
   // Store temporarily for 5 minutes so Airtable can fetch it
   const tempId = crypto.randomUUID();
   _tempPhotos.set(tempId, { buffer, contentType, expires: Date.now() + 5 * 60 * 1000 });
   // Clean up expired entries
   for (const [k, v] of _tempPhotos) { if (v.expires < Date.now()) _tempPhotos.delete(k); }
+
   const photoUrl = `${APP_URL}/api/temp-photo/${tempId}`;
   const filename = photoFilename || "photo.jpg";
-  const baseId = process.env.AIRTABLE_BASE_ID;
-  const token = process.env.AIRTABLE_TOKEN;
-  const table = process.env.AIRTABLE_TABLE_NAME || "Products";
-  const fieldName = AIRTABLE_FIELDS.OFFICE_SAMPLE_PHOTO_FIELD;
-  const url = `https://api.airtable.com/v0/${baseId}/${encodeURIComponent(table)}/${recordId}`;
-  const res = await fetch(url, {
-    method: "PATCH",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ fields: { [fieldName]: [{ url: photoUrl, filename }] } })
+
+  return await updateRecord(recordId, {
+    [AIRTABLE_FIELDS.OFFICE_SAMPLE_PHOTO_FIELD]: [{ url: photoUrl, filename }]
   });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Airtable photo upload failed (${res.status}): ${text}`);
-  }
-  return await res.json();
 }
 
 // ---- Office Samples: submit ----
@@ -450,7 +445,7 @@ app.patch("/api/record/:id/office-sample", requireAuth, async (req, res) => {
         await uploadPhotoToAirtable(id, photoBase64, photoFilename);
       } catch (e) {
         photoUploadError = e.message;
-        console.error("Office sample photo upload failed (non-fatal):", e.message);
+        console.error("[office-sample] photo upload failed:", e.message);
       }
     }
 
@@ -495,6 +490,51 @@ app.post("/api/office-samples/session-pdf", requireAuth, async (req, res) => {
     res.send(pdfBuffer);
   } catch (e) {
     res.status(500).json({ error: e.message || "Session PDF error" });
+  }
+});
+
+// ---- Bulk Allocation: save + generate PDFs + zip ----
+app.post("/api/bulk-alloc", requireAuth, async (req, res) => {
+  try {
+    const { items } = req.body || {};
+    if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: "items required" });
+
+    // Sanitize filename part
+    function safeName(s) { return String(s || "").replace(/[^\w\s-]/g, "").replace(/\s+/g, "_").slice(0, 60); }
+
+    const archive = archiver("zip", { zlib: { level: 6 } });
+    res.setHeader("Content-Type", "application/zip");
+    res.setHeader("Content-Disposition", `attachment; filename="bulk_allocations_${Date.now()}.zip"`);
+    archive.pipe(res);
+
+    for (const item of items) {
+      const { recordId, allocJson, po, productLabel, sizes, locations, allocation } = item;
+
+      // 1. Save allocation to Airtable
+      if (recordId && allocJson !== undefined) {
+        await updateRecord(recordId, { [AIRTABLE_FIELDS.ALLOC_FIELD]: allocJson });
+      }
+
+      // 2. Generate PDF
+      const pdfBuffer = await buildAllocationPdf({
+        username: "bulk",
+        po: po || "",
+        productLabel: productLabel || "",
+        sizes: sizes || [],
+        locations: locations || [],
+        allocation: allocation || {},
+        createdAtISO: new Date().toISOString()
+      });
+
+      const filename = `${safeName(po)}_${safeName(productLabel)}.pdf`;
+      archive.append(pdfBuffer, { name: filename });
+    }
+
+    archive.finalize();
+  } catch (e) {
+    // If headers not sent yet, send JSON error; otherwise just end
+    if (!res.headersSent) res.status(500).json({ error: e.message || "Bulk alloc error" });
+    else res.end();
   }
 });
 
