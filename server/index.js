@@ -407,23 +407,9 @@ async function uploadPhotoToAirtable(recordId, photoBase64, photoFilename) {
   const photoUrl = `${APP_URL}/api/temp-photo/${tempId}`;
   const filename = photoFilename || "photo.jpg";
 
-  const baseId = process.env.AIRTABLE_BASE_ID;
-  const token = process.env.AIRTABLE_TOKEN;
-  const table = process.env.AIRTABLE_TABLE_NAME || "Products";
-  const fieldName = AIRTABLE_FIELDS.OFFICE_SAMPLE_PHOTO_FIELD;
-
-  const url = `https://api.airtable.com/v0/${baseId}/${encodeURIComponent(table)}/${recordId}`;
-  const res = await fetch(url, {
-    method: "PATCH",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
-    body: JSON.stringify({ fields: { [fieldName]: [{ url: photoUrl, filename }] } })
+  return await updateRecord(recordId, {
+    [AIRTABLE_FIELDS.OFFICE_SAMPLE_PHOTO_FIELD]: [{ url: photoUrl, filename }]
   });
-
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Airtable photo upload failed (${res.status}): ${text}`);
-  }
-  return await res.json();
 }
 
 // ---- Office Samples: submit ----
@@ -458,7 +444,7 @@ app.patch("/api/record/:id/office-sample", requireAuth, async (req, res) => {
         await uploadPhotoToAirtable(id, photoBase64, photoFilename);
       } catch (e) {
         photoUploadError = e.message;
-        console.error("Office sample photo upload failed (non-fatal):", e.message);
+        console.error("[office-sample] photo upload failed:", e.message);
       }
     }
 
