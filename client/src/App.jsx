@@ -16,7 +16,8 @@ import {
   allocationPdf,
   submitOfficeSample,
   downloadSessionPdf,
-  bulkAllocPdfs
+  bulkAllocPdfs,
+  fetchRecordsByShopifyGid
 } from "./api.js";
 import { computeAllocation } from "./allocationEngine";
 
@@ -83,7 +84,19 @@ const PACK_SEQUENCE_1_TO_15 = [
 const PACK_CORE_NO_XL = { XS: 3, S: 3, M: 2, L: 1 }; // 9 units (XL optional, XXS optional)
 
 const SIZES = ["XXS", "XS", "S", "M", "L", "XL"];
-const DEFAULT_LOCATIONS = ["Bogota", "Cedarhurst", "Toms River", "Teaneck Store", "Office", "Warehouse"];
+const LOCATION_DISPLAY_ORDER = ["Office", "Cedarhurst", "Bogota", "Toms River", "Teaneck Store", "Warehouse"];
+const DEFAULT_LOCATIONS = LOCATION_DISPLAY_ORDER;
+
+function sortLocations(locs) {
+  return [...locs].sort((a, b) => {
+    const ai = LOCATION_DISPLAY_ORDER.indexOf(a);
+    const bi = LOCATION_DISPLAY_ORDER.indexOf(b);
+    if (ai === -1 && bi === -1) return a.localeCompare(b);
+    if (ai === -1) return 1;
+    if (bi === -1) return -1;
+    return ai - bi;
+  });
+}
 
 // (Not currently used by the allocator below, but leaving in place)
 const PACK_WITH_XXS = { XXS: 1, XS: 3, S: 3, M: 2, L: 1, XL: 1 }; // 11
@@ -304,7 +317,7 @@ export default function App() {
     (async () => {
       try {
         const r = await getLocations();
-        setLocations(r.locations || DEFAULT_LOCATIONS);
+        setLocations(sortLocations(r.locations || DEFAULT_LOCATIONS));
       } catch {
         setLocations(DEFAULT_LOCATIONS);
       }
@@ -387,62 +400,75 @@ export default function App() {
 
   // ---- Bulk Allocation mode (Mode 5) ----
   const [baPOText, setBaPOText] = useState("");
-  const [baLog, setBaLog] = useState([]); // [{ po, label, status, error }]
+  const [baRows, setBaRows] = useState([]); // [{ po, recordId, label, rec, ignoreTeaneck, error }]
+  const [baLoaded, setBaLoaded] = useState(false);
   const [baRunning, setBaRunning] = useState(false);
-  const [baIgnoreTeaneck, setBaIgnoreTeaneck] = useState(false);
   const [baZipReady, setBaZipReady] = useState(false);
 
-  function baAddLog(entry) { setBaLog((p) => [...p, entry]); }
+  function baToggleIgnoreTeaneck(idx) {
+    setBaRows((prev) => prev.map((r, i) => i === idx ? { ...r, ignoreTeaneck: !r.ignoreTeaneck } : r));
+  }
 
-  async function onRunBulkAlloc() {
-    const poList = baPOText
-      .split(/[\n,]+/)
-      .map((s) => s.trim())
-      .filter(Boolean);
-
+  async function onLoadBulkPOs() {
+    const poList = baPOText.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean);
     if (!poList.length) return;
 
-    setBaLog([]);
-    setBaZipReady(false);
+    setBaRows([]);
+    setBaLoaded(false);
     setBaRunning(true);
-    setStatus(`Bulk allocation: processing ${poList.length} PO(s)…`);
+    setBaZipReady(false);
+    setStatus(`Loading ${poList.length} PO(s)…`);
 
-    const items = [];
-
+    const rows = [];
     for (const po of poList) {
       try {
         const data = await fetchPO(po);
         const recs = data.records || [];
-        if (!recs.length) { baAddLog({ po, label: "", status: "error", error: "No records found" }); continue; }
-
-        for (const rec of recs) {
-          const alloc = computeAutoAlloc(rec, locations, sizes, baIgnoreTeaneck);
-          items.push({
-            recordId: rec.id,
-            allocJson: JSON.stringify(alloc),
-            po,
-            productLabel: rec.label,
-            sizes,
-            locations,
-            allocation: alloc
-          });
-          baAddLog({ po, label: rec.label, status: "ok", error: null });
+        if (!recs.length) {
+          rows.push({ po, recordId: null, label: "No records found", rec: null, ignoreTeaneck: false, error: true });
+        } else {
+          for (const rec of recs) {
+            // Extract product title only (first segment before " • ")
+            const title = (rec.label || "").split("•")[0].trim() || rec.label;
+            rows.push({ po, recordId: rec.id, label: title, rec, ignoreTeaneck: false, error: false });
+          }
         }
       } catch (e) {
-        baAddLog({ po, label: "", status: "error", error: e.message });
+        rows.push({ po, recordId: null, label: String(e.message), rec: null, ignoreTeaneck: false, error: true });
       }
     }
 
-    if (!items.length) {
-      setStatus("Bulk allocation: no valid items to process.");
-      setBaRunning(false);
-      return;
-    }
+    setBaRows(rows);
+    setBaLoaded(true);
+    setBaRunning(false);
+    const ok = rows.filter((r) => !r.error).length;
+    setStatus(`Loaded ${ok} product${ok !== 1 ? "s" : ""} from ${poList.length} PO${poList.length !== 1 ? "s" : ""}.`);
+  }
 
-    // Sort alphabetically: by PO first, then by product label within the same PO
+  async function onRunBulkAlloc() {
+    const validRows = baRows.filter((r) => !r.error && r.rec);
+    if (!validRows.length) return;
+
+    setBaRunning(true);
+    setBaZipReady(false);
+    setStatus(`Running allocation for ${validRows.length} product(s)…`);
+
+    const items = validRows.map((row) => {
+      const alloc = computeAutoAlloc(row.rec, locations, sizes, row.ignoreTeaneck);
+      return {
+        recordId: row.recordId,
+        allocJson: JSON.stringify(alloc),
+        po: row.po,
+        productLabel: row.label,
+        sizes,
+        locations,
+        allocation: alloc
+      };
+    });
+
     items.sort((a, b) => {
-      const poComp = (a.po || "").localeCompare(b.po || "");
-      if (poComp !== 0) return poComp;
+      const pc = (a.po || "").localeCompare(b.po || "");
+      if (pc !== 0) return pc;
       return (a.productLabel || "").localeCompare(b.productLabel || "");
     });
 
@@ -463,6 +489,77 @@ export default function App() {
       setStatus(`Bulk allocation PDF/save failed: ${e.message}`);
     } finally {
       setBaRunning(false);
+    }
+  }
+
+  // ---- Product Lookup mode (Mode 6) ----
+  const [plBarcode, setPlBarcode] = useState("");
+  const [plSearch, setPlSearch] = useState("");
+  const [plSearchResults, setPlSearchResults] = useState([]);
+  const [plSelectedId, setPlSelectedId] = useState("");
+  const [plProduct, setPlProduct] = useState(null);
+  const [plLinkedPOs, setPlLinkedPOs] = useState([]);
+  const [plLoading, setPlLoading] = useState(false);
+
+  async function onPlBarcodeSearch() {
+    const bc = plBarcode.trim();
+    if (!bc) return;
+    try {
+      setPlLoading(true);
+      setStatus("Looking up barcode in Shopify…");
+      const r = await shopifyByBarcode(bc);
+      if (!r.found) {
+        setStatus("Barcode not found in Shopify.");
+        setPlProduct(null);
+        setPlLinkedPOs([]);
+        return;
+      }
+      setPlProduct(r.product);
+      const linked = await fetchRecordsByShopifyGid(r.product.productId);
+      setPlLinkedPOs(linked.records || []);
+      setStatus(linked.records?.length ? `Found ${linked.records.length} linked PO(s) ✅` : "Product found — no POs linked yet.");
+    } catch (e) {
+      setStatus(`Lookup failed: ${e.message}`);
+    } finally {
+      setPlLoading(false);
+    }
+  }
+
+  async function onPlTitleSearch() {
+    const q = plSearch.trim();
+    if (!q) return;
+    try {
+      setPlLoading(true);
+      setStatus("Searching Shopify products…");
+      const r = await shopifySearchByTitle(q);
+      setPlSearchResults(r.products || []);
+      setPlSelectedId(r.products?.[0]?.productId || "");
+      setStatus(r.products?.length ? `Found ${r.products.length} product(s) ✅` : "No products found.");
+    } catch (e) {
+      setStatus(`Search failed: ${e.message}`);
+      setPlSearchResults([]);
+    } finally {
+      setPlLoading(false);
+    }
+  }
+
+  async function onPlSelectProduct() {
+    const gid = plSelectedId.trim();
+    if (!gid) return;
+    try {
+      setPlLoading(true);
+      setStatus("Loading product + linked POs…");
+      const [prodRes, linkedRes] = await Promise.all([
+        shopifyByProductId(gid),
+        fetchRecordsByShopifyGid(gid)
+      ]);
+      setPlProduct(prodRes.product);
+      setPlLinkedPOs(linkedRes.records || []);
+      setStatus(linkedRes.records?.length ? `Found ${linkedRes.records.length} linked PO(s) ✅` : "Product found — no POs linked yet.");
+    } catch (e) {
+      setStatus(`Failed: ${e.message}`);
+    } finally {
+      setPlLoading(false);
     }
   }
 
@@ -1159,8 +1256,11 @@ export default function App() {
                 <button className="btn primary modeBtn" onClick={() => { setMode("office-samples"); resetOsState(); }}>
                   4) Office Samples
                 </button>
-                <button className="btn primary modeBtn" onClick={() => { setMode("bulk-allocation"); setBaLog([]); setBaZipReady(false); }}>
+                <button className="btn primary modeBtn" onClick={() => { setMode("bulk-allocation"); setBaRows([]); setBaLoaded(false); setBaZipReady(false); }}>
                   5) Bulk Allocation
+                </button>
+                <button className="btn primary modeBtn" onClick={() => { setMode("product-lookup"); setPlProduct(null); setPlLinkedPOs([]); setPlSearchResults([]); setPlBarcode(""); setPlSearch(""); }}>
+                  6) Product Lookup
                 </button>
                 <div className="hint">After picking a mode, load a PO and select a product.</div>
               </div>
@@ -1171,10 +1271,16 @@ export default function App() {
                   <button className="btn" onClick={() => setMode(null)}>Change</button>
                 </div>
                 <div className="divider" />
-                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 13, cursor: "pointer" }}>
-                  <input type="checkbox" checked={baIgnoreTeaneck} onChange={(e) => setBaIgnoreTeaneck(e.target.checked)} />
-                  Ignore Teaneck
-                </label>
+                <div className="hint">Load POs, set per-product Ignore Teaneck, then run.</div>
+              </>
+            ) : mode === "product-lookup" ? (
+              <>
+                <div className="modeBar">
+                  <div className="modePill">Mode: <strong>Product Lookup</strong></div>
+                  <button className="btn" onClick={() => setMode(null)}>Change</button>
+                </div>
+                <div className="divider" />
+                <div className="hint">Scan a barcode or search by title to find which POs are linked to a Shopify product.</div>
               </>
             ) : mode === "office-samples" ? (
               <>
@@ -1367,10 +1473,29 @@ export default function App() {
               <BulkAllocationPanel
                 poText={baPOText}
                 onPoTextChange={setBaPOText}
-                onRun={onRunBulkAlloc}
+                onLoad={onLoadBulkPOs}
+                rows={baRows}
+                loaded={baLoaded}
                 running={baRunning}
-                log={baLog}
                 zipReady={baZipReady}
+                onToggleIgnoreTeaneck={baToggleIgnoreTeaneck}
+                onRun={onRunBulkAlloc}
+              />
+            ) : mode === "product-lookup" ? (
+              <ProductLookupPanel
+                barcode={plBarcode}
+                onBarcodeChange={setPlBarcode}
+                onBarcodeSearch={onPlBarcodeSearch}
+                search={plSearch}
+                onSearchChange={setPlSearch}
+                onTitleSearch={onPlTitleSearch}
+                searchResults={plSearchResults}
+                selectedId={plSelectedId}
+                onSelectedIdChange={setPlSelectedId}
+                onSelectProduct={onPlSelectProduct}
+                product={plProduct}
+                linkedPOs={plLinkedPOs}
+                loading={plLoading}
               />
             ) : mode === "office-samples" ? (
               <OfficeSamplesWizard
@@ -1846,69 +1971,183 @@ function ReceivingMatrixClean({ locations, sizes, alloc, scan, activeLoc, edit, 
 
 /* ---------------- Bulk Allocation Panel ---------------- */
 
-function BulkAllocationPanel({ poText, onPoTextChange, onRun, running, log, zipReady }) {
-  const total = log.length;
-  const errors = log.filter((l) => l.status === "error").length;
-  const ok = log.filter((l) => l.status === "ok").length;
+function BulkAllocationPanel({ poText, onPoTextChange, onLoad, rows, loaded, running, zipReady, onToggleIgnoreTeaneck, onRun }) {
+  const validCount = rows.filter((r) => !r.error).length;
+  const errorCount = rows.filter((r) => r.error).length;
 
   return (
-    <div style={{ maxWidth: 600 }}>
+    <div style={{ maxWidth: 720 }}>
       <div className="sectionTitle">Mode 5 — Bulk Allocation</div>
-      <div className="hint">
-        Paste PO numbers below (one per line or comma-separated). The auto-allocation algorithm
-        will run on every product in each PO, save to Airtable, and bundle all PDFs into a zip.
-      </div>
 
-      <div style={{ marginTop: 16 }}>
+      {/* Step 1 */}
+      <div className="hint">Step 1 — Paste PO numbers (one per line or comma-separated) then click Load.</div>
+      <div style={{ marginTop: 12, display: "flex", gap: 8, alignItems: "flex-start" }}>
         <textarea
           className="input"
           value={poText}
           onChange={(e) => onPoTextChange(e.target.value)}
           placeholder={"YB1892\nYB1893\nYB1894"}
-          rows={8}
-          style={{ width: "100%", fontFamily: "monospace", fontSize: 14, resize: "vertical" }}
+          rows={5}
+          style={{ flex: 1, fontFamily: "monospace", fontSize: 14, resize: "vertical" }}
           disabled={running}
         />
-      </div>
-
-      <div style={{ marginTop: 10 }}>
         <button
           className="btn primary"
-          onClick={onRun}
+          onClick={onLoad}
           disabled={running || !poText.trim()}
-          style={{ fontSize: 15, padding: "10px 24px" }}
+          style={{ whiteSpace: "nowrap", padding: "10px 20px" }}
         >
-          {running ? "Running…" : "Run Allocation + Download ZIP"}
+          {running && !loaded ? "Loading…" : "Load POs"}
         </button>
       </div>
 
-      {log.length > 0 && (
-        <div style={{ marginTop: 20 }}>
-          <div className="summaryPanelTitle" style={{ marginBottom: 8 }}>
-            Results — {ok} ok{errors ? `, ${errors} error${errors > 1 ? "s" : ""}` : ""} of {total}
-            {zipReady ? " — ZIP downloaded ✅" : ""}
+      {/* Step 2 */}
+      {loaded && rows.length > 0 && (
+        <div style={{ marginTop: 24 }}>
+          <div className="hint" style={{ marginBottom: 10 }}>
+            Step 2 — Check <strong>Ignore Teaneck</strong> for any products that need it, then run.
           </div>
-          <div style={{ maxHeight: 320, overflowY: "auto", border: "1px solid var(--border)", borderRadius: 8, fontSize: 13 }}>
-            {log.map((entry, i) => (
-              <div
-                key={i}
-                style={{
-                  display: "flex",
-                  alignItems: "flex-start",
-                  gap: 8,
-                  padding: "7px 12px",
-                  borderBottom: i < log.length - 1 ? "1px solid var(--border)" : "none",
-                  background: entry.status === "error" ? "var(--softBad)" : i % 2 === 0 ? "#fff" : "#f9fafb"
-                }}
-              >
-                <span style={{ fontSize: 16, lineHeight: 1.4 }}>{entry.status === "ok" ? "✓" : "✗"}</span>
-                <div>
-                  <div style={{ fontWeight: 600 }}>{entry.po}{entry.label ? ` — ${entry.label}` : ""}</div>
-                  {entry.error && <div style={{ color: "var(--bad)", marginTop: 2 }}>{entry.error}</div>}
-                </div>
-              </div>
+          <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>
+            {validCount} product{validCount !== 1 ? "s" : ""} loaded
+            {errorCount > 0 ? ` · ${errorCount} error${errorCount > 1 ? "s" : ""}` : ""}
+          </div>
+
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ background: "#f5f5f5" }}>
+                <th style={{ padding: "8px 10px", border: "1px solid #e0e0e0", textAlign: "left" }}>PO</th>
+                <th style={{ padding: "8px 10px", border: "1px solid #e0e0e0", textAlign: "left" }}>Product</th>
+                <th style={{ padding: "8px 10px", border: "1px solid #e0e0e0", textAlign: "center", whiteSpace: "nowrap" }}>Ignore Teaneck</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row, i) => (
+                <tr key={i} style={{ background: row.error ? "#fff5f5" : i % 2 === 0 ? "#fff" : "#f9fafb" }}>
+                  <td style={{ padding: "7px 10px", border: "1px solid #e0e0e0", fontWeight: 500 }}>{row.po}</td>
+                  <td style={{ padding: "7px 10px", border: "1px solid #e0e0e0", color: row.error ? "var(--bad)" : "inherit" }}>
+                    {row.error ? `⚠ ${row.label}` : row.label}
+                  </td>
+                  <td style={{ padding: "7px 10px", border: "1px solid #e0e0e0", textAlign: "center" }}>
+                    {!row.error && (
+                      <input
+                        type="checkbox"
+                        checked={row.ignoreTeaneck}
+                        onChange={() => onToggleIgnoreTeaneck(i)}
+                        style={{ cursor: "pointer", width: 16, height: 16 }}
+                      />
+                    )}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+
+          <div style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 14 }}>
+            <button
+              className="btn primary"
+              onClick={onRun}
+              disabled={running || validCount === 0}
+              style={{ fontSize: 15, padding: "10px 24px" }}
+            >
+              {running ? "Running…" : `Run Allocation + Download ZIP (${validCount})`}
+            </button>
+            {zipReady && <span style={{ color: "var(--good)", fontWeight: 600 }}>ZIP downloaded ✅</span>}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Product Lookup Panel ---------------- */
+
+function ProductLookupPanel({ barcode, onBarcodeChange, onBarcodeSearch, search, onSearchChange, onTitleSearch, searchResults, selectedId, onSelectedIdChange, onSelectProduct, product, linkedPOs, loading }) {
+  return (
+    <div style={{ maxWidth: 640 }}>
+      <div className="sectionTitle">Mode 6 — Product Lookup</div>
+      <div className="hint">Find which PO(s) are linked to a Shopify product by scanning a barcode or searching by title.</div>
+
+      {/* Barcode */}
+      <div className="label" style={{ marginTop: 20, marginBottom: 6 }}>Scan / Enter Barcode</div>
+      <div className="hstack">
+        <input
+          className="input"
+          value={barcode}
+          onChange={(e) => onBarcodeChange(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") onBarcodeSearch(); }}
+          placeholder="Scan any variant barcode…"
+          disabled={loading}
+          autoFocus
+        />
+        <button className="btn primary" onClick={onBarcodeSearch} disabled={loading || !barcode.trim()}>
+          Look Up
+        </button>
+      </div>
+
+      {/* Title search */}
+      <div className="label" style={{ marginTop: 18, marginBottom: 6 }}>Or Search by Product Title</div>
+      <div className="hstack">
+        <input
+          className="input"
+          value={search}
+          onChange={(e) => onSearchChange(e.target.value)}
+          onKeyDown={(e) => { if (e.key === "Enter") onTitleSearch(); }}
+          placeholder="Search Shopify by title…"
+          disabled={loading}
+        />
+        <button className="btn" onClick={onTitleSearch} disabled={loading || !search.trim()}>
+          Search
+        </button>
+      </div>
+
+      {searchResults.length > 0 && (
+        <div style={{ marginTop: 10, display: "flex", gap: 8, alignItems: "center" }}>
+          <select
+            className="select"
+            value={selectedId}
+            onChange={(e) => onSelectedIdChange(e.target.value)}
+            style={{ flex: 1 }}
+          >
+            {searchResults.map((p) => (
+              <option key={p.productId} value={p.productId}>{p.title}</option>
             ))}
-          </div>
+          </select>
+          <button className="btn primary" onClick={onSelectProduct} disabled={loading || !selectedId}>
+            Look Up
+          </button>
+        </div>
+      )}
+
+      {/* Result */}
+      {product && (
+        <div style={{ marginTop: 24, padding: 16, border: "1px solid var(--border)", borderRadius: 10, background: "#fafafa" }}>
+          <div style={{ fontWeight: 700, fontSize: 16, marginBottom: 12 }}>{product.title}</div>
+
+          {linkedPOs.length === 0 ? (
+            <div className="hint">No Airtable POs are currently linked to this product.</div>
+          ) : (
+            <>
+              <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 8 }}>
+                {linkedPOs.length} linked PO{linkedPOs.length !== 1 ? "s" : ""}:
+              </div>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead>
+                  <tr style={{ background: "#f0f0f0" }}>
+                    <th style={{ padding: "7px 10px", border: "1px solid #e0e0e0", textAlign: "left" }}>PO #</th>
+                    <th style={{ padding: "7px 10px", border: "1px solid #e0e0e0", textAlign: "left" }}>Product</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {linkedPOs.map((r, i) => (
+                    <tr key={i} style={{ background: i % 2 === 0 ? "#fff" : "#f9fafb" }}>
+                      <td style={{ padding: "7px 10px", border: "1px solid #e0e0e0", fontWeight: 600 }}>{r.po}</td>
+                      <td style={{ padding: "7px 10px", border: "1px solid #e0e0e0" }}>{r.label}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </>
+          )}
         </div>
       )}
     </div>

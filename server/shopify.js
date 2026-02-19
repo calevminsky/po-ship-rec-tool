@@ -35,12 +35,12 @@ function extractUserErrors(json) {
 // Your fixed mapping of store locations -> Shopify Location GIDs
 // IMPORTANT: l.id must be a GID like gid://shopify/Location/12345
 const LOCATIONS = [
-  { name: "Bogota", id: "gid://shopify/Location/20363018337" },
-  { name: "Cedarhurst", id: "gid://shopify/Location/31679414369" },
-  { name: "Toms River", id: "gid://shopify/Location/62070161505" },
-  { name: "Teaneck Store", id: "gid://shopify/Location/33027424353" },
-  { name: "Office", id: "gid://shopify/Location/69648253025" },
-  { name: "Warehouse", id: "gid://shopify/Location/68496293985" }
+  { name: "Office",       id: "gid://shopify/Location/69648253025" },
+  { name: "Cedarhurst",   id: "gid://shopify/Location/31679414369" },
+  { name: "Bogota",       id: "gid://shopify/Location/20363018337" },
+  { name: "Toms River",   id: "gid://shopify/Location/62070161505" },
+  { name: "Teaneck Store",id: "gid://shopify/Location/33027424353" },
+  { name: "Warehouse",    id: "gid://shopify/Location/68496293985" }
 ];
 
 export function getLocations() {

@@ -164,6 +164,13 @@ export async function downloadSessionPdf(entries, reportDate) {
   return await r.blob();
 }
 
+export async function fetchRecordsByShopifyGid(gid) {
+  const r = await fetch(`/api/airtable/by-shopify-gid?gid=${encodeURIComponent(gid)}`);
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || "GID lookup failed");
+  return j;
+}
+
 export async function allocationPdf(payload) {
   const r = await fetch("/api/allocation-pdf", {
     method: "POST",
