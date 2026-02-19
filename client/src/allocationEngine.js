@@ -142,7 +142,10 @@ export function computeAllocation({ buy, ship, locations, sizes, ignoreTeaneck }
   const sink = locations.includes("Warehouse") ? "Warehouse" : locations[locations.length - 1];
 
   // ── Step 7a: Office — always 1 XS + 1 S (if both available) ─────────────
+  const officeGot = {};   // track what Office actually received
   if (locations.includes("Office") && Number(inv?.XS ?? 0) >= 1 && Number(inv?.S ?? 0) >= 1) {
+    officeGot.XS = 1;
+    officeGot.S  = 1;
     built = addToLoc(built, "Office", { XS: 1, S: 1 });
     inv   = { ...inv, XS: inv.XS - 1, S: inv.S - 1 };
   }
@@ -158,7 +161,14 @@ export function computeAllocation({ buy, ship, locations, sizes, ignoreTeaneck }
 
     const locAlloc = {};
     for (const s of sizes) {
-      const target = nPacks * (packComp[s] || 0);
+      let target = nPacks * (packComp[s] || 0);
+      // Bogota's first pack has the Office units subtracted so that the office
+      // samples effectively come out of Bogota's allocation.
+      // e.g. 4 packs normally = 33211+33211+33211+33211; with office(1XS,1S)
+      //      → 22211+33211+33211+33211 = total reduced by exactly officeGot.
+      if (loc === "Bogota") {
+        target = Math.max(0, target - Number(officeGot?.[s] ?? 0));
+      }
       const actual = Math.min(target, Number(inv?.[s] ?? 0));
       if (actual > 0) locAlloc[s] = actual;
     }
