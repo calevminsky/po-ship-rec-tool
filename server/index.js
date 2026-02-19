@@ -4,7 +4,7 @@ import { fileURLToPath } from "url";
 import cookieParser from "cookie-parser";
 import archiver from "archiver";
 
-import { listRecordsByPO, updateRecord, getSizes, AIRTABLE_FIELDS } from "./airtable.js";
+import { listRecordsByPO, updateRecord, getSizes, AIRTABLE_FIELDS, listRecordsByShopifyGid } from "./airtable.js";
 import {
   getLocations,
   lookupVariantByBarcode,
@@ -243,6 +243,18 @@ app.get("/api/shopify/search", requireAuth, async (req, res) => {
     res.json({ ok: true, products });
   } catch (e) {
     res.status(500).json({ error: e.message || "Shopify product search error" });
+  }
+});
+
+// ---- Look up Airtable records by Shopify Product GID ----
+app.get("/api/airtable/by-shopify-gid", requireAuth, async (req, res) => {
+  try {
+    const gid = String(req.query.gid || "").trim();
+    if (!gid) return res.status(400).json({ error: "Missing gid" });
+    const records = await listRecordsByShopifyGid(gid);
+    res.json({ ok: true, records });
+  } catch (e) {
+    res.status(500).json({ error: e.message || "GID lookup error" });
   }
 });
 

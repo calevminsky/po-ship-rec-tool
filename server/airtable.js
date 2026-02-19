@@ -132,6 +132,29 @@ export function getSizes() {
   return sizes;
 }
 
+/** Find all Airtable records linked to a given Shopify Product GID. */
+export async function listRecordsByShopifyGid(gid) {
+  const formula = `{${SHOPIFY_PRODUCT_GID_FIELD}}="${escapeQuotes(gid)}"`;
+
+  const params = new URLSearchParams();
+  params.set("filterByFormula", formula);
+  params.append("fields[]", PO_FIELD);
+  params.append("fields[]", SHIP_DATE_FIELD);
+  for (const f of LABEL_FIELDS) params.append("fields[]", f);
+
+  const url = `${BASE}/${baseId}/${encodeURIComponent(table)}?${params.toString()}`;
+  const res = await fetch(url, { headers: headers() });
+  if (!res.ok) throw new Error(`Airtable GID lookup failed (${res.status}): ${await res.text()}`);
+
+  const data = await res.json();
+  return (data.records || []).map((r) => ({
+    id: r.id,
+    po: r.fields?.[PO_FIELD] || "",
+    label: buildLabel(r.fields || {}),
+    shipDate: r.fields?.[SHIP_DATE_FIELD] || null
+  }));
+}
+
 export const AIRTABLE_FIELDS = {
   SHIP_DATE_FIELD,
   DELIVERY_FIELD,
