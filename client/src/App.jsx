@@ -1074,6 +1074,10 @@ export default function App() {
                 <button className="btn primary modeBtn" onClick={() => { setMode("office-samples"); resetOsState(); }}>
                   4) Office Samples
                 </button>
+                <button className="btn primary modeBtn" onClick={() => setMode("bulk")}>
+                  5) Bulk Allocation
+                </button>
+
                 <div className="hint">After picking a mode, load a PO and select a product.</div>
               </div>
             ) : mode === "office-samples" ? (
