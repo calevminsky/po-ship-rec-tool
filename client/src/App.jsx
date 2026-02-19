@@ -17,6 +17,7 @@ import {
   submitOfficeSample,
   downloadSessionPdf,
   bulkAllocPdfs,
+  bulkAllocMergedPdf,
   fetchRecordsByShopifyGid
 } from "./api.js";
 import { computeAllocation } from "./allocationEngine";
@@ -493,6 +494,54 @@ export default function App() {
       setStatus(`Bulk allocation complete ✅ ${items.length} PDF(s) downloaded.`);
     } catch (e) {
       setStatus(`Bulk allocation PDF/save failed: ${e.message}`);
+    } finally {
+      setBaRunning(false);
+    }
+  }
+
+  async function onRunBulkAllocMerged() {
+    const validRows = baRows.filter((r) => !r.error && r.rec);
+    if (!validRows.length) return;
+
+    setBaRunning(true);
+    setStatus(`Running allocation for ${validRows.length} product(s)…`);
+
+    const items = validRows.map((row) => {
+      const alloc = computeAutoAlloc(row.rec, locations, sizes, row.ignoreTeaneck);
+      return {
+        recordId: row.recordId,
+        allocJson: JSON.stringify(alloc),
+        po: row.po,
+        productLabel: row.label,
+        sizes,
+        locations,
+        allocation: alloc,
+        buy: row.rec?.buy || {},
+        ship: row.rec?.ship || {}
+      };
+    });
+
+    items.sort((a, b) => {
+      const pc = (a.po || "").localeCompare(b.po || "");
+      if (pc !== 0) return pc;
+      return (a.productLabel || "").localeCompare(b.productLabel || "");
+    });
+
+    try {
+      setStatus("Saving allocations + generating merged PDF…");
+      const blob = await bulkAllocMergedPdf(items);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `bulk_allocations_${Date.now()}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      setBaZipReady(true);
+      setStatus(`Bulk allocation complete ✅ ${items.length} PDF(s) merged and downloaded.`);
+    } catch (e) {
+      setStatus(`Bulk allocation merged PDF failed: ${e.message}`);
     } finally {
       setBaRunning(false);
     }
@@ -1512,6 +1561,7 @@ export default function App() {
                 onToggleIgnoreTeaneck={baToggleIgnoreTeaneck}
                 onRemoveRow={baRemoveRow}
                 onRun={onRunBulkAlloc}
+                onRunMerged={onRunBulkAllocMerged}
               />
             ) : mode === "product-lookup" ? (
               <ProductLookupPanel
@@ -2003,7 +2053,7 @@ function ReceivingMatrixClean({ locations, sizes, alloc, scan, activeLoc, edit, 
 
 /* ---------------- Bulk Allocation Panel ---------------- */
 
-function BulkAllocationPanel({ poText, onPoTextChange, onLoad, rows, loaded, running, zipReady, onToggleIgnoreTeaneck, onRemoveRow, onRun }) {
+function BulkAllocationPanel({ poText, onPoTextChange, onLoad, rows, loaded, running, zipReady, onToggleIgnoreTeaneck, onRemoveRow, onRun, onRunMerged }) {
   const validCount = rows.filter((r) => !r.error).length;
   const errorCount = rows.filter((r) => r.error).length;
 
@@ -2089,16 +2139,24 @@ function BulkAllocationPanel({ poText, onPoTextChange, onLoad, rows, loaded, run
             </tbody>
           </table>
 
-          <div style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 14 }}>
+          <div style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <button
               className="btn primary"
               onClick={onRun}
               disabled={running || validCount === 0}
               style={{ fontSize: 15, padding: "10px 24px" }}
             >
-              {running ? "Running…" : `Run Allocation + Download ZIP (${validCount})`}
+              {running ? "Running…" : `Download ZIP (${validCount})`}
             </button>
-            {zipReady && <span style={{ color: "var(--good)", fontWeight: 600 }}>ZIP downloaded ✅</span>}
+            <button
+              className="btn secondary"
+              onClick={onRunMerged}
+              disabled={running || validCount === 0}
+              style={{ fontSize: 15, padding: "10px 24px" }}
+            >
+              {running ? "Running…" : `Download Merged PDF (${validCount})`}
+            </button>
+            {zipReady && <span style={{ color: "var(--good)", fontWeight: 600 }}>Downloaded ✅</span>}
           </div>
         </div>
       )}

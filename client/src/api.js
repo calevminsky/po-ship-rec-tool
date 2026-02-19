@@ -136,6 +136,20 @@ export async function bulkAllocPdfs(items) {
   return await r.blob();
 }
 
+export async function bulkAllocMergedPdf(items) {
+  const r = await fetch("/api/bulk-alloc-merged", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ items })
+  });
+  if (!r.ok) {
+    let msg = "Bulk allocation merge failed";
+    try { const j = await r.json(); msg = j.error || msg; } catch {}
+    throw new Error(msg);
+  }
+  return await r.blob();
+}
+
 export async function submitOfficeSample(recordId, payload) {
   const r = await fetch(`/api/record/${encodeURIComponent(recordId)}/office-sample`, {
     method: "PATCH",
