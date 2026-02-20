@@ -513,7 +513,7 @@ app.post("/api/office-samples/session-pdf", requireAuth, async (req, res) => {
 // ---- Bulk Allocation: save + generate PDFs + zip ----
 app.post("/api/bulk-alloc", requireAuth, async (req, res) => {
   try {
-    const { items } = req.body || {};
+    const { items, notes } = req.body || {};
     if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: "items required" });
 
     // Sanitize filename part
@@ -542,7 +542,8 @@ app.post("/api/bulk-alloc", requireAuth, async (req, res) => {
         allocation: allocation || {},
         createdAtISO: new Date().toISOString(),
         buy: buy || {},
-        ship: ship || {}
+        ship: ship || {},
+        notes: notes || ""
       });
 
       const filename = `${safeName(po)}_${safeName(productLabel)}.pdf`;
@@ -560,7 +561,7 @@ app.post("/api/bulk-alloc", requireAuth, async (req, res) => {
 // ---- Bulk Allocation: save + generate single merged PDF ----
 app.post("/api/bulk-alloc-merged", requireAuth, async (req, res) => {
   try {
-    const { items } = req.body || {};
+    const { items, notes } = req.body || {};
     if (!Array.isArray(items) || !items.length) return res.status(400).json({ error: "items required" });
 
     const buffers = [];
@@ -582,7 +583,8 @@ app.post("/api/bulk-alloc-merged", requireAuth, async (req, res) => {
         allocation: allocation || {},
         createdAtISO: new Date().toISOString(),
         buy: buy || {},
-        ship: ship || {}
+        ship: ship || {},
+        notes: notes || ""
       });
       buffers.push(pdfBuffer);
     }

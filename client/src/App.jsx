@@ -405,6 +405,7 @@ export default function App() {
   const [baLoaded, setBaLoaded] = useState(false);
   const [baRunning, setBaRunning] = useState(false);
   const [baZipReady, setBaZipReady] = useState(false);
+  const [baNotes, setBaNotes] = useState("");
 
   function baToggleIgnoreTeaneck(idx) {
     setBaRows((prev) => prev.map((r, i) => i === idx ? { ...r, ignoreTeaneck: !r.ignoreTeaneck } : r));
@@ -481,7 +482,7 @@ export default function App() {
 
     try {
       setStatus("Saving allocations + generating PDFs…");
-      const blob = await bulkAllocPdfs(items);
+      const blob = await bulkAllocPdfs(items, baNotes);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -529,7 +530,7 @@ export default function App() {
 
     try {
       setStatus("Saving allocations + generating merged PDF…");
-      const blob = await bulkAllocMergedPdf(items);
+      const blob = await bulkAllocMergedPdf(items, baNotes);
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
@@ -1562,6 +1563,8 @@ export default function App() {
                 onRemoveRow={baRemoveRow}
                 onRun={onRunBulkAlloc}
                 onRunMerged={onRunBulkAllocMerged}
+                notes={baNotes}
+                onNotesChange={setBaNotes}
               />
             ) : mode === "product-lookup" ? (
               <ProductLookupPanel
@@ -2053,7 +2056,7 @@ function ReceivingMatrixClean({ locations, sizes, alloc, scan, activeLoc, edit, 
 
 /* ---------------- Bulk Allocation Panel ---------------- */
 
-function BulkAllocationPanel({ poText, onPoTextChange, onLoad, rows, loaded, running, zipReady, onToggleIgnoreTeaneck, onRemoveRow, onRun, onRunMerged }) {
+function BulkAllocationPanel({ poText, onPoTextChange, onLoad, rows, loaded, running, zipReady, onToggleIgnoreTeaneck, onRemoveRow, onRun, onRunMerged, notes, onNotesChange }) {
   const validCount = rows.filter((r) => !r.error).length;
   const errorCount = rows.filter((r) => r.error).length;
 
@@ -2138,6 +2141,19 @@ function BulkAllocationPanel({ poText, onPoTextChange, onLoad, rows, loaded, run
               })}
             </tbody>
           </table>
+
+          <div style={{ marginTop: 16 }}>
+            <label style={{ display: "block", fontWeight: 600, fontSize: 13, marginBottom: 4 }}>Notes (appears on all PDFs)</label>
+            <textarea
+              className="input"
+              value={notes}
+              onChange={(e) => onNotesChange(e.target.value)}
+              placeholder="Optional notes to print on every allocation PDF…"
+              rows={2}
+              style={{ width: "100%", fontSize: 13, resize: "vertical", boxSizing: "border-box" }}
+              disabled={running}
+            />
+          </div>
 
           <div style={{ marginTop: 14, display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
             <button
