@@ -85,7 +85,7 @@ const PACK_SEQUENCE_1_TO_15 = [
 const PACK_CORE_NO_XL = { XS: 3, S: 3, M: 2, L: 1 }; // 9 units (XL optional, XXS optional)
 
 const SIZES = ["XXS", "XS", "S", "M", "L", "XL"];
-const LOCATION_DISPLAY_ORDER = ["Office", "Cedarhurst", "Bogota", "Toms River", "Teaneck Store", "Warehouse"];
+const LOCATION_DISPLAY_ORDER = ["Office", "Bogota", "Cedarhurst", "Teaneck Store", "Toms River", "Warehouse"];
 const DEFAULT_LOCATIONS = LOCATION_DISPLAY_ORDER;
 
 function sortLocations(locs) {
