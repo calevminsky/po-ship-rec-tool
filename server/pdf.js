@@ -169,7 +169,7 @@ function drawSectionLabel(doc, label, margin, pageWidth) {
 // ════════════════════════════════════════════════════════════════════════════
 //  Allocation PDF
 // ════════════════════════════════════════════════════════════════════════════
-export function buildAllocationPdf({ username, po, productLabel, sizes, locations, allocation, createdAtISO, buy, ship }) {
+export function buildAllocationPdf({ username, po, productLabel, sizes, locations, allocation, createdAtISO, buy, ship, notes }) {
   const doc = new PDFDocument({ margin: 36 });
   const buffers = [];
   doc.on("data", (d) => buffers.push(d));
@@ -193,13 +193,23 @@ export function buildAllocationPdf({ username, po, productLabel, sizes, location
 
   // Buy / Ship summary
   doc.y = afterAlloc + 14;
-  drawTable(doc, {
+  const afterBuyShip = drawTable(doc, {
     x: margin,
     y: doc.y,
     colWidths,
     rowHeight: 22,
     rows: buildBuyShipRows(sizes, buy || {}, ship || {})
   });
+
+  // Notes (if provided)
+  if (notes && notes.trim()) {
+    doc.y = afterBuyShip + 18;
+    doc.font("Helvetica-Bold").fontSize(10).fillColor(SECTION_LBL)
+      .text("Notes:", margin, doc.y, { width: pageWidth });
+    doc.moveDown(0.25);
+    doc.font("Helvetica").fontSize(10).fillColor(TEXT)
+      .text(notes.trim(), margin, doc.y, { width: pageWidth });
+  }
 
   doc.end();
   return done;
