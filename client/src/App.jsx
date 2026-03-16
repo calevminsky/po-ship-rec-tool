@@ -2203,15 +2203,16 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
   const poKeys = Object.keys(byPo).sort();
 
   // Compute totals for selected records
-  let grandFinalCost = 0, grandPaid = 0, grandCredit = 0, grandBalance = 0;
+  let grandInvoice = 0, grandShortage = 0, grandCredit = 0, grandPaid = 0, grandBalance = 0;
   let selectedCount = 0;
 
   for (const rec of records) {
     if (selected[rec.id]) {
       selectedCount++;
-      grandFinalCost += Number(rec.finalCost ?? 0);
-      grandPaid += Number(rec.paid ?? 0);
+      grandInvoice += Number(rec.invoiceAmount ?? 0);
+      grandShortage += Number(rec.shortageAdjustment ?? 0);
       grandCredit += Number(rec.creditAmount ?? 0);
+      grandPaid += Number(rec.paid ?? 0);
       grandBalance += Number(rec.balance ?? 0);
     }
   }
@@ -2229,16 +2230,16 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
           <table className="matrix2 matrixSimple" style={{ marginTop: 8 }}>
             <tbody>
               <tr>
-                <td className="locCell">Final Cost</td>
-                <td className="cellRead strong">{money(grandFinalCost)}</td>
+                <td className="locCell">Invoice Amount</td>
+                <td className="cellRead strong">{money(grandInvoice)}</td>
               </tr>
               <tr>
-                <td className="locCell">Already Paid</td>
+                <td className="locCell">Credits (shortage + credit)</td>
+                <td className="cellRead">{money(grandShortage + grandCredit)}</td>
+              </tr>
+              <tr>
+                <td className="locCell">Paid</td>
                 <td className="cellRead">{money(grandPaid)}</td>
-              </tr>
-              <tr>
-                <td className="locCell">Credits</td>
-                <td className="cellRead">{money(grandCredit)}</td>
               </tr>
               <tr style={{ fontWeight: 700, fontSize: 15 }}>
                 <td className="locCell">Balance Due</td>
@@ -2273,7 +2274,7 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
               return (
                 <div key={rec.id} style={{ marginBottom: 2, border: isSelected ? "2px solid #2563eb" : "1px solid #e5e7eb", borderRadius: 6, overflow: "hidden" }}>
                   {/* Collapsed row */}
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", background: isSelected ? "#eff6ff" : "#fff", cursor: "pointer" }} onClick={() => toggleExpand(rec.id)}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 10px", background: isSelected ? "#eff6ff" : "#fff", cursor: "pointer", fontSize: 12 }} onClick={() => toggleExpand(rec.id)}>
                     <input
                       type="checkbox"
                       checked={isSelected}
@@ -2281,11 +2282,12 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
                       onClick={(e) => e.stopPropagation()}
                       style={{ width: 15, height: 15, flexShrink: 0 }}
                     />
-                    <span style={{ fontSize: 13, color: "#9ca3af", flexShrink: 0 }}>{isExpanded ? "\u25BC" : "\u25B6"}</span>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <span style={{ fontWeight: 500, fontSize: 13 }}>{rec.label}</span>
-                    </div>
-                    <span style={{ fontSize: 13, color: rec.balance > 0 ? "#dc2626" : "#16a34a", fontWeight: 600, flexShrink: 0 }}>{money(rec.balance)}</span>
+                    <span style={{ color: "#9ca3af", flexShrink: 0 }}>{isExpanded ? "\u25BC" : "\u25B6"}</span>
+                    <div style={{ flex: 1, minWidth: 0, fontWeight: 500, fontSize: 13, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{rec.label}</div>
+                    <span style={{ color: "#6b7280", flexShrink: 0 }} title="Invoice">{money(rec.invoiceAmount)}</span>
+                    <span style={{ color: "#6b7280", flexShrink: 0 }} title="Credits (shortage + credit)">−{money(Number(rec.shortageAdjustment ?? 0) + Number(rec.creditAmount ?? 0))}</span>
+                    <span style={{ color: "#6b7280", flexShrink: 0 }} title="Paid">Pd {money(rec.paid)}</span>
+                    <span style={{ fontWeight: 600, flexShrink: 0, color: rec.balance > 0 ? "#dc2626" : "#16a34a" }} title="Balance">{money(rec.balance)}</span>
                   </div>
 
                   {/* Expanded detail */}
