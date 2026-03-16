@@ -19,7 +19,8 @@ import {
   bulkAllocPdfs,
   bulkAllocMergedPdf,
   fetchRecordsByShopifyGid,
-  fetchInvoiceData
+  fetchUnpaidRecords,
+  markRecordsPaid
 } from "./api.js";
 import { computeAllocation } from "./allocationEngine";
 
@@ -552,23 +553,20 @@ export default function App() {
 
   // ---- Product Lookup mode (Mode 6) ----
   // Invoicing (Mode 7)
-  const [invPoInput, setInvPoInput] = useState("");
-  const [invData, setInvData] = useState(null); // { results: [{ po, sizes, records }] }
-  const [invSelected, setInvSelected] = useState({}); // { recordId: true/false } for payment selection
+  const [invRecords, setInvRecords] = useState([]);
+  const [invSizes, setInvSizes] = useState([]);
+  const [invSelected, setInvSelected] = useState({}); // { recordId: true/false }
   const [invLoading, setInvLoading] = useState(false);
 
-  async function onLoadInvoiceData() {
-    const raw = invPoInput.trim();
-    if (!raw) return;
-    const poNums = raw.split(/[,\n]+/).map((s) => s.trim()).filter(Boolean);
-    if (!poNums.length) return;
+  async function onLoadUnpaid() {
     try {
       setInvLoading(true);
-      setStatus("Loading invoice data…");
-      const data = await fetchInvoiceData(poNums);
-      setInvData(data);
+      setStatus("Loading unpaid records…");
+      const data = await fetchUnpaidRecords();
+      setInvRecords(data.records || []);
+      setInvSizes(data.sizes || []);
       setInvSelected({});
-      setStatus(`Loaded ${data.results.reduce((a, r) => a + r.records.length, 0)} records across ${data.results.length} PO(s).`);
+      setStatus(`Found ${(data.records || []).length} unpaid record(s).`);
     } catch (e) {
       setStatus(`Invoice load failed: ${e.message}`);
     } finally {
@@ -578,6 +576,47 @@ export default function App() {
 
   function toggleInvSelect(recordId) {
     setInvSelected((prev) => ({ ...prev, [recordId]: !prev[recordId] }));
+  }
+
+  function selectAllInvByPo(po) {
+    setInvSelected((prev) => {
+      const next = { ...prev };
+      for (const r of invRecords) {
+        if (r.po === po) next[r.id] = true;
+      }
+      return next;
+    });
+  }
+
+  function deselectAllInvByPo(po) {
+    setInvSelected((prev) => {
+      const next = { ...prev };
+      for (const r of invRecords) {
+        if (r.po === po) next[r.id] = false;
+      }
+      return next;
+    });
+  }
+
+  async function onMarkSelectedPaid() {
+    const toMark = invRecords.filter((r) => invSelected[r.id]);
+    if (!toMark.length) return;
+
+    const total = toMark.reduce((a, r) => a + Number(r.finalCost ?? 0), 0);
+    const ok = window.confirm(`Mark ${toMark.length} record(s) as paid?\n\nTotal: ${money(total)}\n\nThis will set each record's Paid field to its Final Cost.`);
+    if (!ok) return;
+
+    try {
+      setInvLoading(true);
+      setStatus("Marking as paid…");
+      await markRecordsPaid(toMark.map((r) => ({ id: r.id, amount: r.finalCost })));
+      setStatus(`Marked ${toMark.length} record(s) as paid ✅`);
+      // Reload
+      await onLoadUnpaid();
+    } catch (e) {
+      setStatus(`Mark paid failed: ${e.message}`);
+      setInvLoading(false);
+    }
   }
 
   // Product Lookup (Mode 6)
@@ -1376,7 +1415,7 @@ export default function App() {
                 <button className="btn primary modeBtn" onClick={() => { setMode("product-lookup"); setPlProduct(null); setPlLinkedPOs([]); setPlSearchResults([]); setPlBarcode(""); setPlSearch(""); }}>
                   6) Product Lookup
                 </button>
-                <button className="btn primary modeBtn" onClick={() => { setMode("invoicing"); setInvPoInput(""); setInvData(null); setInvSelected({}); }}>
+                <button className="btn primary modeBtn" onClick={() => { setMode("invoicing"); setInvRecords([]); setInvSelected({}); onLoadUnpaid(); }}>
                   7) Invoicing
                 </button>
                 <div className="hint">After picking a mode, load a PO and select a product.</div>
@@ -1403,23 +1442,18 @@ export default function App() {
               <>
                 <div className="modeBar">
                   <div className="modePill">Mode: <strong>Invoicing</strong></div>
-                  <button className="btn" onClick={() => { setMode(null); setInvData(null); setInvPoInput(""); setInvSelected({}); }}>Change</button>
+                  <button className="btn" onClick={() => { setMode(null); setInvRecords([]); setInvSelected({}); }}>Change</button>
                 </div>
                 <div className="divider" />
-                <div className="hint">Enter PO number(s) separated by commas to view buy/ship/rec breakdown with costs.</div>
-                <div className="field" style={{ marginTop: 8 }}>
-                  <textarea
-                    className="dateBig"
-                    placeholder="PO-001, PO-002"
-                    value={invPoInput}
-                    onChange={(e) => setInvPoInput(e.target.value)}
-                    rows={2}
-                    style={{ width: "100%", resize: "vertical", fontFamily: "inherit" }}
-                  />
-                </div>
-                <button className="btn primary" onClick={onLoadInvoiceData} disabled={invLoading} style={{ width: "100%", marginTop: 6 }}>
-                  {invLoading ? "Loading…" : "Load Invoice Data"}
+                <div className="hint">Showing all unpaid POs. Select records and mark as paid.</div>
+                <button className="btn" onClick={onLoadUnpaid} disabled={invLoading} style={{ width: "100%", marginTop: 6 }}>
+                  {invLoading ? "Loading…" : "Refresh"}
                 </button>
+                {Object.values(invSelected).some(Boolean) && (
+                  <button className="btn primary" onClick={onMarkSelectedPaid} disabled={invLoading} style={{ width: "100%", marginTop: 6 }}>
+                    Mark Selected as Paid
+                  </button>
+                )}
               </>
             ) : mode === "office-samples" ? (
               <>
@@ -1642,9 +1676,13 @@ export default function App() {
               />
             ) : mode === "invoicing" ? (
               <InvoicingPanel
-                data={invData}
+                records={invRecords}
+                sizes={invSizes}
                 selected={invSelected}
                 onToggleSelect={toggleInvSelect}
+                onSelectAllPo={selectAllInvByPo}
+                onDeselectAllPo={deselectAllInvByPo}
+                loading={invLoading}
               />
             ) : mode === "office-samples" ? (
               <OfficeSamplesWizard
@@ -2131,184 +2169,172 @@ function ReceivingMatrixClean({ locations, sizes, alloc, scan, activeLoc, edit, 
 
 /* ---------------- Invoicing Panel ---------------- */
 
-function InvoicingPanel({ data, selected, onToggleSelect }) {
-  if (!data || !data.results || !data.results.length) {
+function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllPo, onDeselectAllPo, loading }) {
+  if (loading && !records.length) {
     return (
       <div className="emptyState">
-        <div className="emptyTitle">Invoicing</div>
-        <div className="emptyText">Enter PO number(s) in the sidebar and click Load to view the buy/ship/rec breakdown with costs.</div>
+        <div className="emptyTitle">Loading unpaid records…</div>
       </div>
     );
   }
 
-  // Compute grand totals across all selected records
-  let grandBought = 0, grandShipped = 0, grandReceived = 0;
-  let grandBoughtCost = 0, grandShippedCost = 0, grandReceivedCost = 0;
-  let grandPaid = 0, grandCredit = 0, grandBalance = 0;
+  if (!records.length) {
+    return (
+      <div className="emptyState">
+        <div className="emptyTitle">All caught up!</div>
+        <div className="emptyText">No unpaid records found.</div>
+      </div>
+    );
+  }
 
-  for (const poGroup of data.results) {
-    for (const rec of poGroup.records) {
-      if (selected[rec.id]) {
-        const sizes = poGroup.sizes || [];
-        const unitCost = Number(rec.unitCost ?? 0);
-        for (const s of sizes) {
-          grandBought += Number(rec.buy?.[s] ?? 0);
-          grandShipped += Number(rec.ship?.[s] ?? 0);
-          grandReceived += Number(rec.rec?.[s] ?? 0);
-        }
-        grandBoughtCost += Number(rec.buy ? Object.values(rec.buy).reduce((a, b) => a + Number(b), 0) : 0) * unitCost;
-        grandShippedCost += Number(rec.invoiceAmount ?? 0);
-        grandReceivedCost += Number(rec.finalCost ?? 0);
-        grandPaid += Number(rec.paid ?? 0);
-        grandCredit += Number(rec.creditAmount ?? 0);
-        grandBalance += Number(rec.balance ?? 0);
-      }
+  // Group records by PO
+  const byPo = {};
+  for (const rec of records) {
+    const po = rec.po || "(No PO)";
+    if (!byPo[po]) byPo[po] = [];
+    byPo[po].push(rec);
+  }
+  const poKeys = Object.keys(byPo).sort();
+
+  // Compute totals for selected records
+  let grandFinalCost = 0, grandPaid = 0, grandCredit = 0, grandBalance = 0;
+  let selectedCount = 0;
+
+  for (const rec of records) {
+    if (selected[rec.id]) {
+      selectedCount++;
+      grandFinalCost += Number(rec.finalCost ?? 0);
+      grandPaid += Number(rec.paid ?? 0);
+      grandCredit += Number(rec.creditAmount ?? 0);
+      grandBalance += Number(rec.balance ?? 0);
     }
   }
 
-  const hasSelection = Object.values(selected).some(Boolean);
+  const hasSelection = selectedCount > 0;
 
   return (
     <div>
       <div className="sectionTitle">Mode 7 — Invoicing</div>
-      <div className="hint">Review buy/ship/rec quantities and costs per PO. Select rows to calculate payment totals.</div>
+      <div className="hint">{records.length} unpaid record(s) across {poKeys.length} PO(s). Select records to see totals and mark as paid.</div>
 
       {hasSelection && (
-        <div className="summaryPanel" style={{ marginTop: 12, marginBottom: 16 }}>
-          <div className="summaryPanelTitle">Payment Summary (Selected)</div>
+        <div className="summaryPanel" style={{ marginTop: 12, marginBottom: 16, position: "sticky", top: 0, zIndex: 10, background: "white", borderBottom: "2px solid #2563eb", padding: 12, borderRadius: 8 }}>
+          <div className="summaryPanelTitle">{selectedCount} record(s) selected</div>
           <table className="matrix2 matrixSimple" style={{ marginTop: 8 }}>
-            <thead>
-              <tr>
-                <th className="c-loc"></th>
-                <th className="c-size2">Units</th>
-                <th className="c-size2">Cost</th>
-              </tr>
-            </thead>
             <tbody>
               <tr>
-                <td className="locCell">Bought</td>
-                <td className="cellRead">{grandBought}</td>
-                <td className="cellRead">{money(grandBoughtCost)}</td>
+                <td className="locCell">Final Cost</td>
+                <td className="cellRead strong">{money(grandFinalCost)}</td>
               </tr>
               <tr>
-                <td className="locCell">Shipped</td>
-                <td className="cellRead">{grandShipped}</td>
-                <td className="cellRead">{money(grandShippedCost)}</td>
+                <td className="locCell">Already Paid</td>
+                <td className="cellRead">{money(grandPaid)}</td>
               </tr>
               <tr>
-                <td className="locCell">Received</td>
-                <td className="cellRead">{grandReceived}</td>
-                <td className="cellRead">{money(grandReceivedCost)}</td>
+                <td className="locCell">Credits</td>
+                <td className="cellRead">{money(grandCredit)}</td>
+              </tr>
+              <tr style={{ fontWeight: 700, fontSize: 15 }}>
+                <td className="locCell">Balance Due</td>
+                <td className="cellRead" style={{ color: grandBalance > 0 ? "#dc2626" : "#16a34a" }}>{money(grandBalance)}</td>
               </tr>
             </tbody>
           </table>
-          <div style={{ marginTop: 10, borderTop: "1px solid #e5e7eb", paddingTop: 8 }}>
-            <table className="matrix2 matrixSimple">
-              <tbody>
-                <tr>
-                  <td className="locCell">Final Cost (Rec × Unit)</td>
-                  <td className="cellRead strong">{money(grandReceivedCost)}</td>
-                </tr>
-                <tr>
-                  <td className="locCell">Already Paid</td>
-                  <td className="cellRead">{money(grandPaid)}</td>
-                </tr>
-                <tr>
-                  <td className="locCell">Credits</td>
-                  <td className="cellRead">{money(grandCredit)}</td>
-                </tr>
-                <tr style={{ fontWeight: 700, fontSize: 15 }}>
-                  <td className="locCell">Balance Due</td>
-                  <td className="cellRead" style={{ color: grandBalance > 0 ? "#dc2626" : "#16a34a" }}>{money(grandBalance)}</td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
         </div>
       )}
 
-      {data.results.map((poGroup) => (
-        <div key={poGroup.po} style={{ marginBottom: 24 }}>
-          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8, borderBottom: "2px solid #e5e7eb", paddingBottom: 4 }}>
-            PO: {poGroup.po}
-          </div>
+      {poKeys.map((po) => {
+        const poRecords = byPo[po];
+        const poBalance = poRecords.reduce((a, r) => a + Number(r.balance ?? 0), 0);
+        const allSelected = poRecords.every((r) => selected[r.id]);
 
-          {poGroup.records.map((rec) => {
-            const sizes = poGroup.sizes || [];
-            const unitCost = Number(rec.unitCost ?? 0);
-            const isSelected = !!selected[rec.id];
+        return (
+          <div key={po} style={{ marginBottom: 24 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 16, fontWeight: 600, marginBottom: 8, borderBottom: "2px solid #e5e7eb", paddingBottom: 4 }}>
+              <span>PO: {po}</span>
+              <span style={{ fontSize: 13, fontWeight: 400, color: "#6b7280" }}>({poRecords.length} item{poRecords.length !== 1 ? "s" : ""} — Balance: <span style={{ color: "#dc2626", fontWeight: 600 }}>{money(poBalance)}</span>)</span>
+              <button className="linkBtn" style={{ marginLeft: "auto", fontSize: 12 }} onClick={() => allSelected ? onDeselectAllPo(po) : onSelectAllPo(po)}>
+                {allSelected ? "Deselect All" : "Select All"}
+              </button>
+            </div>
 
-            const buyRow = sizes.map((s) => Number(rec.buy?.[s] ?? 0));
-            const shipRow = sizes.map((s) => Number(rec.ship?.[s] ?? 0));
-            const recRow = sizes.map((s) => Number(rec.rec?.[s] ?? 0));
+            {poRecords.map((rec) => {
+              const unitCost = Number(rec.unitCost ?? 0);
+              const isSelected = !!selected[rec.id];
 
-            const buyTotal = buyRow.reduce((a, b) => a + b, 0);
-            const shipTotal = shipRow.reduce((a, b) => a + b, 0);
-            const recTotal = recRow.reduce((a, b) => a + b, 0);
+              const buyRow = sizes.map((s) => Number(rec.buy?.[s] ?? 0));
+              const shipRow = sizes.map((s) => Number(rec.ship?.[s] ?? 0));
+              const recRow = sizes.map((s) => Number(rec.rec?.[s] ?? 0));
 
-            return (
-              <div key={rec.id} className="tableCard" style={{ marginBottom: 12, border: isSelected ? "2px solid #2563eb" : undefined }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: "#f9fafb", borderBottom: "1px solid #e5e7eb" }}>
-                  <input
-                    type="checkbox"
-                    checked={isSelected}
-                    onChange={() => onToggleSelect(rec.id)}
-                    style={{ width: 16, height: 16 }}
-                  />
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontWeight: 600, fontSize: 14 }}>{rec.label}</div>
-                    <div style={{ fontSize: 12, color: "#6b7280" }}>
-                      Unit Cost: {money(unitCost)} | Paid: {money(rec.paid)} | Balance: <span style={{ color: rec.balance > 0 ? "#dc2626" : "#16a34a", fontWeight: 600 }}>{money(rec.balance)}</span>
+              const buyTotal = buyRow.reduce((a, b) => a + b, 0);
+              const shipTotal = shipRow.reduce((a, b) => a + b, 0);
+              const recTotal = recRow.reduce((a, b) => a + b, 0);
+
+              return (
+                <div key={rec.id} className="tableCard" style={{ marginBottom: 12, border: isSelected ? "2px solid #2563eb" : undefined }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: isSelected ? "#eff6ff" : "#f9fafb", borderBottom: "1px solid #e5e7eb", cursor: "pointer" }} onClick={() => onToggleSelect(rec.id)}>
+                    <input
+                      type="checkbox"
+                      checked={isSelected}
+                      onChange={() => onToggleSelect(rec.id)}
+                      onClick={(e) => e.stopPropagation()}
+                      style={{ width: 16, height: 16 }}
+                    />
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontWeight: 600, fontSize: 14 }}>{rec.label}</div>
+                      <div style={{ fontSize: 12, color: "#6b7280" }}>
+                        Unit Cost: {money(unitCost)} | Paid: {money(rec.paid)} | Balance: <span style={{ color: rec.balance > 0 ? "#dc2626" : "#16a34a", fontWeight: 600 }}>{money(rec.balance)}</span>
+                      </div>
                     </div>
+                    {rec.imageUrl && (
+                      <img src={rec.imageUrl} alt="" style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 6 }} />
+                    )}
                   </div>
-                  {rec.imageUrl && (
-                    <img src={rec.imageUrl} alt="" style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 6 }} />
-                  )}
-                </div>
 
-                <table className="matrix2 matrixSimple">
-                  <thead>
-                    <tr>
-                      <th className="c-loc"></th>
-                      {sizes.map((s) => (
-                        <th key={s} className="c-size2">{s}</th>
-                      ))}
-                      <th className="c-rowtotal">Total</th>
-                      <th className="c-rowtotal">Cost</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    <tr>
-                      <td className="locCell subtleRow">Bought</td>
-                      {buyRow.map((v, i) => (
-                        <td key={sizes[i]} className="cellRead">{v}</td>
-                      ))}
-                      <td className="cellRead strong">{buyTotal}</td>
-                      <td className="cellRead strong">{money(buyTotal * unitCost)}</td>
-                    </tr>
-                    <tr>
-                      <td className="locCell subtleRow">Shipped</td>
-                      {shipRow.map((v, i) => (
-                        <td key={sizes[i]} className="cellRead">{v}</td>
-                      ))}
-                      <td className="cellRead strong">{shipTotal}</td>
-                      <td className="cellRead strong">{money(shipTotal * unitCost)}</td>
-                    </tr>
-                    <tr>
-                      <td className="locCell">Received</td>
-                      {recRow.map((v, i) => (
-                        <td key={sizes[i]} className="cellRead">{v}</td>
-                      ))}
-                      <td className="cellRead strong">{recTotal}</td>
-                      <td className="cellRead strong">{money(recTotal * unitCost)}</td>
-                    </tr>
-                  </tbody>
-                </table>
-              </div>
-            );
-          })}
-        </div>
-      ))}
+                  <table className="matrix2 matrixSimple">
+                    <thead>
+                      <tr>
+                        <th className="c-loc"></th>
+                        {sizes.map((s) => (
+                          <th key={s} className="c-size2">{s}</th>
+                        ))}
+                        <th className="c-rowtotal">Total</th>
+                        <th className="c-rowtotal">Cost</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr>
+                        <td className="locCell subtleRow">Bought</td>
+                        {buyRow.map((v, i) => (
+                          <td key={sizes[i]} className="cellRead">{v}</td>
+                        ))}
+                        <td className="cellRead strong">{buyTotal}</td>
+                        <td className="cellRead strong">{money(buyTotal * unitCost)}</td>
+                      </tr>
+                      <tr>
+                        <td className="locCell subtleRow">Shipped</td>
+                        {shipRow.map((v, i) => (
+                          <td key={sizes[i]} className="cellRead">{v}</td>
+                        ))}
+                        <td className="cellRead strong">{shipTotal}</td>
+                        <td className="cellRead strong">{money(shipTotal * unitCost)}</td>
+                      </tr>
+                      <tr>
+                        <td className="locCell">Received</td>
+                        {recRow.map((v, i) => (
+                          <td key={sizes[i]} className="cellRead">{v}</td>
+                        ))}
+                        <td className="cellRead strong">{recTotal}</td>
+                        <td className="cellRead strong">{money(recTotal * unitCost)}</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })}
     </div>
   );
 }

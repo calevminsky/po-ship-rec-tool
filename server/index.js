@@ -5,7 +5,7 @@ import cookieParser from "cookie-parser";
 import archiver from "archiver";
 import { PDFDocument } from "pdf-lib";
 
-import { listRecordsByPO, updateRecord, getSizes, AIRTABLE_FIELDS, listRecordsByShopifyGid } from "./airtable.js";
+import { listRecordsByPO, updateRecord, getSizes, AIRTABLE_FIELDS, listRecordsByShopifyGid, listUnpaidRecords } from "./airtable.js";
 import {
   getLocations,
   lookupVariantByBarcode,
@@ -123,18 +123,30 @@ app.get("/api/po/:po", requireAuth, async (req, res) => {
   }
 });
 
-// ---- Invoice Data (multi-PO) ----
-app.post("/api/invoice-data", requireAuth, async (req, res) => {
+// ---- Invoicing: get all unpaid records ----
+app.get("/api/invoicing/unpaid", requireAuth, async (req, res) => {
   try {
-    const { poNumbers } = req.body || {};
-    if (!Array.isArray(poNumbers) || !poNumbers.length) {
-      return res.status(400).json({ error: "poNumbers must be a non-empty array" });
+    const data = await listUnpaidRecords();
+    res.json({ ok: true, ...data });
+  } catch (e) {
+    res.status(500).json({ error: e.message || "Server error" });
+  }
+});
+
+// ---- Invoicing: mark records as paid ----
+app.post("/api/invoicing/mark-paid", requireAuth, async (req, res) => {
+  try {
+    const { records } = req.body || {};
+    if (!Array.isArray(records) || !records.length) {
+      return res.status(400).json({ error: "records must be a non-empty array of { id, amount }" });
     }
 
     const results = [];
-    for (const po of poNumbers) {
-      const data = await listRecordsByPO(po.trim());
-      results.push(data);
+    for (const { id, amount } of records) {
+      const updated = await updateRecord(id, {
+        [AIRTABLE_FIELDS.PAID_FIELD]: Number(amount)
+      });
+      results.push({ id, ok: true });
     }
 
     res.json({ ok: true, results });

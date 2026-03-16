@@ -185,14 +185,21 @@ export async function fetchRecordsByShopifyGid(gid) {
   return j;
 }
 
-export async function fetchInvoiceData(poNumbers) {
-  const r = await fetch("/api/invoice-data", {
+export async function fetchUnpaidRecords() {
+  const r = await fetch("/api/invoicing/unpaid");
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || "Failed to load unpaid records");
+  return j;
+}
+
+export async function markRecordsPaid(records) {
+  const r = await fetch("/api/invoicing/mark-paid", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ poNumbers })
+    body: JSON.stringify({ records })
   });
   const j = await r.json();
-  if (!r.ok) throw new Error(j.error || "Failed to load invoice data");
+  if (!r.ok) throw new Error(j.error || "Failed to mark as paid");
   return j;
 }
 
