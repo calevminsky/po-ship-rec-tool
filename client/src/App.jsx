@@ -2171,9 +2171,23 @@ function ReceivingMatrixClean({ locations, sizes, alloc, scan, activeLoc, edit, 
 
 function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllPo, onDeselectAllPo, loading }) {
   const [expanded, setExpanded] = useState({});
+  const [sortCol, setSortCol] = useState(null);
+  const [sortDir, setSortDir] = useState("asc");
+  const [filterVendor, setFilterVendor] = useState("");
+  const [filterPo, setFilterPo] = useState("");
+  const [filterProduct, setFilterProduct] = useState("");
 
   function toggleExpand(id) {
     setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
+  }
+
+  function handleSort(col) {
+    if (sortCol === col) {
+      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
+    } else {
+      setSortCol(col);
+      setSortDir("asc");
+    }
   }
 
   if (loading && !records.length) {
@@ -2193,6 +2207,40 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
     );
   }
 
+  // Unique values for filter dropdowns
+  const vendorOptions = [...new Set(records.map((r) => r.vendor).filter(Boolean))].sort();
+  const poOptions = [...new Set(records.map((r) => r.po).filter(Boolean))].sort();
+
+  // Filter
+  let filtered = records;
+  if (filterVendor) filtered = filtered.filter((r) => r.vendor === filterVendor);
+  if (filterPo) filtered = filtered.filter((r) => r.po === filterPo);
+  if (filterProduct) filtered = filtered.filter((r) => r.label.toLowerCase().includes(filterProduct.toLowerCase()));
+
+  // Sort
+  if (sortCol) {
+    const getter = {
+      product: (r) => (r.label || "").toLowerCase(),
+      po: (r) => (r.po || ""),
+      vendor: (r) => (r.vendor || "").toLowerCase(),
+      buy: (r) => r.buyUnits ?? 0,
+      ship: (r) => r.shipUnits ?? 0,
+      rec: (r) => r.recUnits ?? 0,
+      recDate: (r) => r.delivery || "",
+      invoice: (r) => r.invoiceAmount ?? 0,
+      credits: (r) => (Number(r.shortageAdjustment ?? 0) + Number(r.creditAmount ?? 0)),
+      paid: (r) => r.paid ?? 0,
+      balance: (r) => r.balance ?? 0,
+    }[sortCol];
+    if (getter) {
+      filtered = [...filtered].sort((a, b) => {
+        const va = getter(a), vb = getter(b);
+        const cmp = typeof va === "number" ? va - vb : String(va).localeCompare(String(vb));
+        return sortDir === "asc" ? cmp : -cmp;
+      });
+    }
+  }
+
   // Compute totals for selected records
   let grandInvoice = 0, grandShortage = 0, grandCredit = 0, grandPaid = 0, grandBalance = 0;
   let selectedCount = 0;
@@ -2209,18 +2257,42 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
   }
 
   const hasSelection = selectedCount > 0;
+  const arrow = (col) => sortCol === col ? (sortDir === "asc" ? " \u25B2" : " \u25BC") : "";
 
-  const thStyle = { padding: "6px 8px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "#6b7280", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap", position: "sticky", top: 0, background: "#f9fafb" };
+  const thStyle = { padding: "6px 8px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "#6b7280", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap", background: "#f9fafb", cursor: "pointer", userSelect: "none" };
   const tdStyle = { padding: "5px 8px", fontSize: 12, borderBottom: "1px solid #f3f4f6", whiteSpace: "nowrap" };
   const numTd = { ...tdStyle, textAlign: "right", fontVariantNumeric: "tabular-nums" };
+  const filterInput = { padding: "4px 6px", fontSize: 11, border: "1px solid #d1d5db", borderRadius: 4, width: "100%" };
 
   return (
     <div>
       <div className="sectionTitle">Mode 7 — Invoicing</div>
-      <div className="hint">{records.length} unpaid record(s). Click a row to expand per-size breakdown.</div>
+      <div className="hint">{filtered.length} of {records.length} unpaid record(s). Click a row to expand per-size breakdown.</div>
+
+      {/* Filters */}
+      <div style={{ display: "flex", gap: 8, marginTop: 8, marginBottom: 8, flexWrap: "wrap", alignItems: "center", fontSize: 12 }}>
+        <input
+          type="text"
+          placeholder="Search product…"
+          value={filterProduct}
+          onChange={(e) => setFilterProduct(e.target.value)}
+          style={{ ...filterInput, width: 180 }}
+        />
+        <select value={filterPo} onChange={(e) => setFilterPo(e.target.value)} style={filterInput}>
+          <option value="">All POs</option>
+          {poOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+        </select>
+        <select value={filterVendor} onChange={(e) => setFilterVendor(e.target.value)} style={filterInput}>
+          <option value="">All Vendors</option>
+          {vendorOptions.map((v) => <option key={v} value={v}>{v}</option>)}
+        </select>
+        {(filterProduct || filterPo || filterVendor) && (
+          <button className="linkBtn" style={{ fontSize: 11 }} onClick={() => { setFilterProduct(""); setFilterPo(""); setFilterVendor(""); }}>Clear filters</button>
+        )}
+      </div>
 
       {hasSelection && (
-        <div style={{ marginTop: 8, marginBottom: 12, position: "sticky", top: 0, zIndex: 10, background: "white", borderBottom: "2px solid #2563eb", padding: "8px 12px", borderRadius: 8, display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap", fontSize: 13 }}>
+        <div style={{ marginBottom: 8, position: "sticky", top: 0, zIndex: 10, background: "white", borderBottom: "2px solid #2563eb", padding: "8px 12px", borderRadius: 8, display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap", fontSize: 13 }}>
           <span style={{ fontWeight: 600 }}>{selectedCount} selected</span>
           <span>Invoice: <b>{money(grandInvoice)}</b></span>
           <span>Credits: <b>{money(grandShortage + grandCredit)}</b></span>
@@ -2229,36 +2301,38 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
         </div>
       )}
 
-      <div style={{ overflowX: "auto", marginTop: 8 }}>
+      <div style={{ overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
           <thead>
             <tr style={{ background: "#f9fafb" }}>
-              <th style={{ ...thStyle, width: 28, textAlign: "center" }}>
+              <th style={{ ...thStyle, width: 28, textAlign: "center", cursor: "default" }}>
                 <input
                   type="checkbox"
-                  checked={records.length > 0 && records.every((r) => selected[r.id])}
+                  checked={filtered.length > 0 && filtered.every((r) => selected[r.id])}
                   onChange={() => {
-                    const allSel = records.every((r) => selected[r.id]);
+                    const allSel = filtered.every((r) => selected[r.id]);
                     const byPo = {};
-                    for (const r of records) { const po = r.po || "(No PO)"; if (!byPo[po]) byPo[po] = []; byPo[po].push(r); }
+                    for (const r of filtered) { const po = r.po || "(No PO)"; if (!byPo[po]) byPo[po] = []; byPo[po].push(r); }
                     for (const po of Object.keys(byPo)) { allSel ? onDeselectAllPo(po) : onSelectAllPo(po); }
                   }}
                   style={{ width: 14, height: 14 }}
                 />
               </th>
-              <th style={thStyle}>Product</th>
-              <th style={thStyle}>PO</th>
-              <th style={thStyle}>Vendor</th>
-              <th style={{ ...thStyle, textAlign: "right" }}>Ship</th>
-              <th style={{ ...thStyle, textAlign: "right" }}>Rec</th>
-              <th style={{ ...thStyle, textAlign: "right" }}>Invoice</th>
-              <th style={{ ...thStyle, textAlign: "right" }}>Credits</th>
-              <th style={{ ...thStyle, textAlign: "right" }}>Paid</th>
-              <th style={{ ...thStyle, textAlign: "right" }}>Balance</th>
+              <th style={thStyle} onClick={() => handleSort("product")}>Product{arrow("product")}</th>
+              <th style={thStyle} onClick={() => handleSort("po")}>PO{arrow("po")}</th>
+              <th style={thStyle} onClick={() => handleSort("vendor")}>Vendor{arrow("vendor")}</th>
+              <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSort("buy")}>Buy{arrow("buy")}</th>
+              <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSort("ship")}>Ship{arrow("ship")}</th>
+              <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSort("rec")}>Rec{arrow("rec")}</th>
+              <th style={thStyle} onClick={() => handleSort("recDate")}>Rec Date{arrow("recDate")}</th>
+              <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSort("invoice")}>Invoice{arrow("invoice")}</th>
+              <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSort("credits")}>Credits{arrow("credits")}</th>
+              <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSort("paid")}>Paid{arrow("paid")}</th>
+              <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSort("balance")}>Balance{arrow("balance")}</th>
             </tr>
           </thead>
           <tbody>
-            {records.map((rec) => {
+            {filtered.map((rec) => {
               const isSelected = !!selected[rec.id];
               const isExpanded = !!expanded[rec.id];
               const credits = Number(rec.shortageAdjustment ?? 0) + Number(rec.creditAmount ?? 0);
@@ -2283,8 +2357,10 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
                     </td>
                     <td style={tdStyle}>{rec.po}</td>
                     <td style={{ ...tdStyle, color: "#6b7280" }}>{rec.vendor}</td>
+                    <td style={numTd}>{rec.buyUnits ?? 0}</td>
                     <td style={numTd}>{rec.shipUnits ?? 0}</td>
                     <td style={numTd}>{rec.recUnits ?? 0}</td>
+                    <td style={{ ...tdStyle, fontSize: 11, color: "#6b7280" }}>{rec.delivery || ""}</td>
                     <td style={numTd}>{money(rec.invoiceAmount)}</td>
                     <td style={numTd}>{credits ? money(credits) : ""}</td>
                     <td style={numTd}>{rec.paid ? money(rec.paid) : ""}</td>
@@ -2300,7 +2376,7 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
 
                     return (
                       <tr>
-                        <td colSpan={10} style={{ padding: 0 }}>
+                        <td colSpan={12} style={{ padding: 0 }}>
                           <div style={{ padding: "8px 12px 8px 36px", background: "#f9fafb", borderBottom: "1px solid #e5e7eb" }}>
                             <table style={{ borderCollapse: "collapse", fontSize: 11, width: "auto" }}>
                               <thead>
