@@ -37,11 +37,11 @@ export async function getLocations() {
   return j;
 }
 
-export async function saveShip(recordId, shipDate, shipTotals) {
+export async function saveShip(recordId, shipDate, shipTotals, trackingNumber) {
   const r = await fetch(`/api/record/${encodeURIComponent(recordId)}/save-ship`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ shipDate, shipTotals })
+    body: JSON.stringify({ shipDate, shipTotals, trackingNumber })
   });
   const j = await r.json();
   if (!r.ok) throw new Error(j.error || "Failed to save shipping");
@@ -182,6 +182,17 @@ export async function fetchRecordsByShopifyGid(gid) {
   const r = await fetch(`/api/airtable/by-shopify-gid?gid=${encodeURIComponent(gid)}`);
   const j = await r.json();
   if (!r.ok) throw new Error(j.error || "GID lookup failed");
+  return j;
+}
+
+export async function fetchInvoiceData(poNumbers) {
+  const r = await fetch("/api/invoice-data", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ poNumbers })
+  });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || "Failed to load invoice data");
   return j;
 }
 

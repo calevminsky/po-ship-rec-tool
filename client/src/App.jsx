@@ -18,7 +18,8 @@ import {
   downloadSessionPdf,
   bulkAllocPdfs,
   bulkAllocMergedPdf,
-  fetchRecordsByShopifyGid
+  fetchRecordsByShopifyGid,
+  fetchInvoiceData
 } from "./api.js";
 import { computeAllocation } from "./allocationEngine";
 
@@ -328,6 +329,7 @@ export default function App() {
   // Shipping (Mode 1)
   const [shipDate, setShipDate] = useState("");
   const [shipEdits, setShipEdits] = useState(null);
+  const [trackingNumber, setTrackingNumber] = useState("");
 
   // Allocation (Mode 2)
   const [alloc, setAlloc] = useState(() => emptyMatrix(DEFAULT_LOCATIONS, SIZES));
@@ -549,6 +551,36 @@ export default function App() {
   }
 
   // ---- Product Lookup mode (Mode 6) ----
+  // Invoicing (Mode 7)
+  const [invPoInput, setInvPoInput] = useState("");
+  const [invData, setInvData] = useState(null); // { results: [{ po, sizes, records }] }
+  const [invSelected, setInvSelected] = useState({}); // { recordId: true/false } for payment selection
+  const [invLoading, setInvLoading] = useState(false);
+
+  async function onLoadInvoiceData() {
+    const raw = invPoInput.trim();
+    if (!raw) return;
+    const poNums = raw.split(/[,\n]+/).map((s) => s.trim()).filter(Boolean);
+    if (!poNums.length) return;
+    try {
+      setInvLoading(true);
+      setStatus("Loading invoice data…");
+      const data = await fetchInvoiceData(poNums);
+      setInvData(data);
+      setInvSelected({});
+      setStatus(`Loaded ${data.results.reduce((a, r) => a + r.records.length, 0)} records across ${data.results.length} PO(s).`);
+    } catch (e) {
+      setStatus(`Invoice load failed: ${e.message}`);
+    } finally {
+      setInvLoading(false);
+    }
+  }
+
+  function toggleInvSelect(recordId) {
+    setInvSelected((prev) => ({ ...prev, [recordId]: !prev[recordId] }));
+  }
+
+  // Product Lookup (Mode 6)
   const [plBarcode, setPlBarcode] = useState("");
   const [plSearch, setPlSearch] = useState("");
   const [plSearchResults, setPlSearchResults] = useState([]);
@@ -710,6 +742,7 @@ export default function App() {
 
     setShipEdits({ ...selected.ship });
     setShipDate(fmtDateForInput(selected.shipDate));
+    setTrackingNumber(selected.trackingNumber || "");
 
     const a = parseJsonOrNull(selected.allocJson) || emptyMatrix(locations, sizes);
     const sc = parseJsonOrNull(selected.scanJson) || emptyMatrix(locations, sizes);
@@ -787,7 +820,7 @@ export default function App() {
     try {
       setLoading(true);
       setStatus("Saving shipping…");
-      await saveShip(selectedId, shipDate, shipEdits || {});
+      await saveShip(selectedId, shipDate, shipEdits || {}, trackingNumber);
       setStatus("Shipping saved ✅");
     } catch (e) {
       setStatus(`Shipping save failed: ${e.message}`);
@@ -1343,6 +1376,9 @@ export default function App() {
                 <button className="btn primary modeBtn" onClick={() => { setMode("product-lookup"); setPlProduct(null); setPlLinkedPOs([]); setPlSearchResults([]); setPlBarcode(""); setPlSearch(""); }}>
                   6) Product Lookup
                 </button>
+                <button className="btn primary modeBtn" onClick={() => { setMode("invoicing"); setInvPoInput(""); setInvData(null); setInvSelected({}); }}>
+                  7) Invoicing
+                </button>
                 <div className="hint">After picking a mode, load a PO and select a product.</div>
               </div>
             ) : mode === "bulk-allocation" ? (
@@ -1362,6 +1398,28 @@ export default function App() {
                 </div>
                 <div className="divider" />
                 <div className="hint">Scan a barcode or search by title to find which POs are linked to a Shopify product.</div>
+              </>
+            ) : mode === "invoicing" ? (
+              <>
+                <div className="modeBar">
+                  <div className="modePill">Mode: <strong>Invoicing</strong></div>
+                  <button className="btn" onClick={() => { setMode(null); setInvData(null); setInvPoInput(""); setInvSelected({}); }}>Change</button>
+                </div>
+                <div className="divider" />
+                <div className="hint">Enter PO number(s) separated by commas to view buy/ship/rec breakdown with costs.</div>
+                <div className="field" style={{ marginTop: 8 }}>
+                  <textarea
+                    className="dateBig"
+                    placeholder="PO-001, PO-002"
+                    value={invPoInput}
+                    onChange={(e) => setInvPoInput(e.target.value)}
+                    rows={2}
+                    style={{ width: "100%", resize: "vertical", fontFamily: "inherit" }}
+                  />
+                </div>
+                <button className="btn primary" onClick={onLoadInvoiceData} disabled={invLoading} style={{ width: "100%", marginTop: 6 }}>
+                  {invLoading ? "Loading…" : "Load Invoice Data"}
+                </button>
               </>
             ) : mode === "office-samples" ? (
               <>
@@ -1582,6 +1640,12 @@ export default function App() {
                 linkedPOs={plLinkedPOs}
                 loading={plLoading}
               />
+            ) : mode === "invoicing" ? (
+              <InvoicingPanel
+                data={invData}
+                selected={invSelected}
+                onToggleSelect={toggleInvSelect}
+              />
             ) : mode === "office-samples" ? (
               <OfficeSamplesWizard
                 step={osStep}
@@ -1643,6 +1707,17 @@ export default function App() {
                       <div className="shipRow">
                         <div className="label">Ship Date</div>
                         <input className="dateBig" type="date" value={shipDate} onChange={(e) => setShipDate(e.target.value)} />
+                      </div>
+
+                      <div className="shipRow">
+                        <div className="label">Tracking Number</div>
+                        <input
+                          className="dateBig"
+                          type="text"
+                          placeholder="Enter tracking number"
+                          value={trackingNumber}
+                          onChange={(e) => setTrackingNumber(e.target.value)}
+                        />
                       </div>
 
                       <BuyShipTotalsRow sizes={sizes} buyTotals={buyTotalsBySize} shipTotals={shipTotalsBySize} />
@@ -2050,6 +2125,171 @@ function ReceivingMatrixClean({ locations, sizes, alloc, scan, activeLoc, edit, 
           })}
         </tbody>
       </table>
+    </div>
+  );
+}
+
+/* ---------------- Invoicing Panel ---------------- */
+
+function InvoicingPanel({ data, selected, onToggleSelect }) {
+  if (!data || !data.results || !data.results.length) {
+    return (
+      <div className="emptyState">
+        <div className="emptyTitle">Invoicing</div>
+        <div className="emptyText">Enter PO number(s) in the sidebar and click Load to view the buy/ship/rec breakdown with costs.</div>
+      </div>
+    );
+  }
+
+  // Compute grand totals across all selected records
+  let grandBought = 0, grandShipped = 0, grandReceived = 0;
+  let grandBoughtCost = 0, grandShippedCost = 0, grandReceivedCost = 0;
+
+  const allRecords = [];
+  for (const poGroup of data.results) {
+    for (const rec of poGroup.records) {
+      const sizes = poGroup.sizes || [];
+      const unitCost = Number(rec.unitCost ?? 0);
+      let boughtTotal = 0, shippedTotal = 0, receivedTotal = 0;
+      for (const s of sizes) {
+        boughtTotal += Number(rec.buy?.[s] ?? 0);
+        shippedTotal += Number(rec.ship?.[s] ?? 0);
+        receivedTotal += Number(rec.rec?.[s] ?? 0);
+      }
+      allRecords.push({ ...rec, po: poGroup.po, sizes, boughtTotal, shippedTotal, receivedTotal, unitCost });
+      if (selected[rec.id]) {
+        grandBought += boughtTotal;
+        grandShipped += shippedTotal;
+        grandReceived += receivedTotal;
+        grandBoughtCost += boughtTotal * unitCost;
+        grandShippedCost += shippedTotal * unitCost;
+        grandReceivedCost += receivedTotal * unitCost;
+      }
+    }
+  }
+
+  const hasSelection = Object.values(selected).some(Boolean);
+
+  return (
+    <div>
+      <div className="sectionTitle">Mode 7 — Invoicing</div>
+      <div className="hint">Review buy/ship/rec quantities and costs per PO. Select rows to calculate payment totals.</div>
+
+      {hasSelection && (
+        <div className="summaryPanel" style={{ marginTop: 12, marginBottom: 16 }}>
+          <div className="summaryPanelTitle">Payment Summary (Selected)</div>
+          <table className="matrix2 matrixSimple" style={{ marginTop: 8 }}>
+            <thead>
+              <tr>
+                <th className="c-loc"></th>
+                <th className="c-size2">Units</th>
+                <th className="c-size2">Cost</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td className="locCell">Bought</td>
+                <td className="cellRead">{grandBought}</td>
+                <td className="cellRead">{money(grandBoughtCost)}</td>
+              </tr>
+              <tr>
+                <td className="locCell">Shipped</td>
+                <td className="cellRead">{grandShipped}</td>
+                <td className="cellRead">{money(grandShippedCost)}</td>
+              </tr>
+              <tr style={{ fontWeight: 600 }}>
+                <td className="locCell">Received</td>
+                <td className="cellRead">{grandReceived}</td>
+                <td className="cellRead">{money(grandReceivedCost)}</td>
+              </tr>
+            </tbody>
+          </table>
+          <div style={{ marginTop: 8, fontSize: 13, color: "#6b7280" }}>
+            Amount to pay (based on received): <strong>{money(grandReceivedCost)}</strong>
+          </div>
+        </div>
+      )}
+
+      {data.results.map((poGroup) => (
+        <div key={poGroup.po} style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: 16, fontWeight: 600, marginBottom: 8, borderBottom: "2px solid #e5e7eb", paddingBottom: 4 }}>
+            PO: {poGroup.po}
+          </div>
+
+          {poGroup.records.map((rec) => {
+            const sizes = poGroup.sizes || [];
+            const unitCost = Number(rec.unitCost ?? 0);
+            const isSelected = !!selected[rec.id];
+
+            const buyRow = sizes.map((s) => Number(rec.buy?.[s] ?? 0));
+            const shipRow = sizes.map((s) => Number(rec.ship?.[s] ?? 0));
+            const recRow = sizes.map((s) => Number(rec.rec?.[s] ?? 0));
+
+            const buyTotal = buyRow.reduce((a, b) => a + b, 0);
+            const shipTotal = shipRow.reduce((a, b) => a + b, 0);
+            const recTotal = recRow.reduce((a, b) => a + b, 0);
+
+            return (
+              <div key={rec.id} className="tableCard" style={{ marginBottom: 12, border: isSelected ? "2px solid #2563eb" : undefined }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 10px", background: "#f9fafb", borderBottom: "1px solid #e5e7eb" }}>
+                  <input
+                    type="checkbox"
+                    checked={isSelected}
+                    onChange={() => onToggleSelect(rec.id)}
+                    style={{ width: 16, height: 16 }}
+                  />
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontWeight: 600, fontSize: 14 }}>{rec.label}</div>
+                    <div style={{ fontSize: 12, color: "#6b7280" }}>Unit Cost: {money(unitCost)}</div>
+                  </div>
+                  {rec.imageUrl && (
+                    <img src={rec.imageUrl} alt="" style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 6 }} />
+                  )}
+                </div>
+
+                <table className="matrix2 matrixSimple">
+                  <thead>
+                    <tr>
+                      <th className="c-loc"></th>
+                      {sizes.map((s) => (
+                        <th key={s} className="c-size2">{s}</th>
+                      ))}
+                      <th className="c-rowtotal">Total</th>
+                      <th className="c-rowtotal">Cost</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    <tr>
+                      <td className="locCell subtleRow">Bought</td>
+                      {buyRow.map((v, i) => (
+                        <td key={sizes[i]} className="cellRead">{v}</td>
+                      ))}
+                      <td className="cellRead strong">{buyTotal}</td>
+                      <td className="cellRead strong">{money(buyTotal * unitCost)}</td>
+                    </tr>
+                    <tr>
+                      <td className="locCell subtleRow">Shipped</td>
+                      {shipRow.map((v, i) => (
+                        <td key={sizes[i]} className="cellRead">{v}</td>
+                      ))}
+                      <td className="cellRead strong">{shipTotal}</td>
+                      <td className="cellRead strong">{money(shipTotal * unitCost)}</td>
+                    </tr>
+                    <tr>
+                      <td className="locCell">Received</td>
+                      {recRow.map((v, i) => (
+                        <td key={sizes[i]} className="cellRead">{v}</td>
+                      ))}
+                      <td className="cellRead strong">{recTotal}</td>
+                      <td className="cellRead strong">{money(recTotal * unitCost)}</td>
+                    </tr>
+                  </tbody>
+                </table>
+              </div>
+            );
+          })}
+        </div>
+      ))}
     </div>
   );
 }

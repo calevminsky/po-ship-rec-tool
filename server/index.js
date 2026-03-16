@@ -123,6 +123,26 @@ app.get("/api/po/:po", requireAuth, async (req, res) => {
   }
 });
 
+// ---- Invoice Data (multi-PO) ----
+app.post("/api/invoice-data", requireAuth, async (req, res) => {
+  try {
+    const { poNumbers } = req.body || {};
+    if (!Array.isArray(poNumbers) || !poNumbers.length) {
+      return res.status(400).json({ error: "poNumbers must be a non-empty array" });
+    }
+
+    const results = [];
+    for (const po of poNumbers) {
+      const data = await listRecordsByPO(po.trim());
+      results.push(data);
+    }
+
+    res.json({ ok: true, results });
+  } catch (e) {
+    res.status(500).json({ error: e.message || "Server error" });
+  }
+});
+
 // ---- Locations ----
 app.get("/api/locations", requireAuth, (req, res) => {
   res.json({ ok: true, locations: getLocations().map((l) => l.name) });
@@ -146,7 +166,7 @@ app.patch("/api/record/:id/save-allocation", requireAuth, async (req, res) => {
 app.patch("/api/record/:id/save-ship", requireAuth, async (req, res) => {
   try {
     const id = req.params.id;
-    const { shipDate, shipTotals } = req.body || {};
+    const { shipDate, shipTotals, trackingNumber } = req.body || {};
 
     if (typeof shipTotals !== "object" || shipTotals === null) {
       return res.status(400).json({ error: "shipTotals must be an object" });
@@ -157,6 +177,10 @@ app.patch("/api/record/:id/save-ship", requireAuth, async (req, res) => {
 
     if (shipDate !== undefined) {
       patch[AIRTABLE_FIELDS.SHIP_DATE_FIELD] = shipDate || null;
+    }
+
+    if (trackingNumber !== undefined) {
+      patch[AIRTABLE_FIELDS.TRACKING_NUMBER_FIELD] = trackingNumber || "";
     }
 
     for (const s of sizes) {
@@ -360,10 +384,24 @@ app.post("/api/closeout", requireAuth, async (req, res) => {
 });
 
 // ---- Allocation PDF only ----
+async function uploadPdfToAirtable(recordId, pdfBuffer, filename) {
+  const APP_URL = process.env.APP_URL;
+  if (!APP_URL) return; // silently skip if no APP_URL configured
+
+  const tempId = crypto.randomUUID();
+  _tempPhotos.set(tempId, { buffer: pdfBuffer, contentType: "application/pdf", expires: Date.now() + 5 * 60 * 1000 });
+  for (const [k, v] of _tempPhotos) { if (v.expires < Date.now()) _tempPhotos.delete(k); }
+
+  const pdfUrl = `${APP_URL}/api/temp-photo/${tempId}`;
+  await updateRecord(recordId, {
+    [AIRTABLE_FIELDS.ALLOC_PDF_FIELD]: [{ url: pdfUrl, filename }]
+  });
+}
+
 app.post("/api/allocation-pdf", requireAuth, async (req, res) => {
   try {
     const username = req.user?.username || "unknown";
-    const { po, productLabel, sizes, locations, allocation, buy, ship } = req.body || {};
+    const { recordId, po, productLabel, sizes, locations, allocation, buy, ship } = req.body || {};
 
     if (!po) return res.status(400).json({ error: "Missing po" });
     if (!productLabel) return res.status(400).json({ error: "Missing productLabel" });
@@ -383,6 +421,14 @@ app.post("/api/allocation-pdf", requireAuth, async (req, res) => {
       buy: buy || {},
       ship: ship || {}
     });
+
+    // Upload PDF to Airtable attachment field (non-blocking, non-fatal)
+    if (recordId) {
+      const pdfFilename = `allocation_${po || "PO"}_${Date.now()}.pdf`;
+      uploadPdfToAirtable(recordId, pdfBuffer, pdfFilename).catch((e) => {
+        console.error("[allocation-pdf] Airtable PDF upload failed:", e.message);
+      });
+    }
 
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename="allocation_${po || "PO"}_${Date.now()}.pdf"`);
