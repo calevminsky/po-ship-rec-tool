@@ -19,6 +19,12 @@ const SCAN_FIELD = process.env.AIRTABLE_SCAN_FIELD || "Scan_JSON";
 // Example value: gid://shopify/Product/1234567890
 const SHOPIFY_PRODUCT_GID_FIELD = process.env.AIRTABLE_SHOPIFY_PRODUCT_GID_FIELD || "Shopify_Product_GID";
 
+// Tracking Number field
+const TRACKING_NUMBER_FIELD = process.env.AIRTABLE_TRACKING_NUMBER_FIELD || "Tracking_Number";
+
+// Allocation PDF attachment field
+const ALLOC_PDF_FIELD = process.env.AIRTABLE_ALLOC_PDF_FIELD || "Alloc_PDF";
+
 // Office Samples fields
 const OFFICE_SENT_FIELD = process.env.AIRTABLE_OFFICE_SENT_FIELD || "Office_Sent";
 const OFFICE_SAMPLE_PHOTO_FIELD = process.env.AIRTABLE_OFFICE_SAMPLE_PHOTO_FIELD || "Office_Sample_Photo";
@@ -67,6 +73,7 @@ export async function listRecordsByPO(po) {
   params.append("fields[]", SCAN_FIELD);
   params.append("fields[]", SHOPIFY_PRODUCT_GID_FIELD);
   params.append("fields[]", OFFICE_SENT_FIELD);
+  params.append("fields[]", TRACKING_NUMBER_FIELD);
 
   for (const f of LABEL_FIELDS) params.append("fields[]", f);
 
@@ -107,6 +114,7 @@ export async function listRecordsByPO(po) {
         scanJson: f[SCAN_FIELD] ?? null,
         shopifyProductGid: f[SHOPIFY_PRODUCT_GID_FIELD] ?? null,
         officeSent: f[OFFICE_SENT_FIELD] ?? null,
+        trackingNumber: f[TRACKING_NUMBER_FIELD] ?? "",
         buy,
         ship,
         rec
@@ -162,5 +170,7 @@ export const AIRTABLE_FIELDS = {
   SCAN_FIELD,
   SHOPIFY_PRODUCT_GID_FIELD,
   OFFICE_SENT_FIELD,
-  OFFICE_SAMPLE_PHOTO_FIELD
+  OFFICE_SAMPLE_PHOTO_FIELD,
+  TRACKING_NUMBER_FIELD,
+  ALLOC_PDF_FIELD
 };
