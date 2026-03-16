@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { Fragment, useEffect, useMemo, useRef, useState } from "react";
 import {
   fetchPO,
   me,
@@ -2193,15 +2193,6 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
     );
   }
 
-  // Group records by PO
-  const byPo = {};
-  for (const rec of records) {
-    const po = rec.po || "(No PO)";
-    if (!byPo[po]) byPo[po] = [];
-    byPo[po].push(rec);
-  }
-  const poKeys = Object.keys(byPo).sort();
-
   // Compute totals for selected records
   let grandInvoice = 0, grandShortage = 0, grandCredit = 0, grandPaid = 0, grandBalance = 0;
   let selectedCount = 0;
@@ -2219,78 +2210,86 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
 
   const hasSelection = selectedCount > 0;
 
+  const thStyle = { padding: "6px 8px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "#6b7280", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap", position: "sticky", top: 0, background: "#f9fafb" };
+  const tdStyle = { padding: "5px 8px", fontSize: 12, borderBottom: "1px solid #f3f4f6", whiteSpace: "nowrap" };
+  const numTd = { ...tdStyle, textAlign: "right", fontVariantNumeric: "tabular-nums" };
+
   return (
     <div>
       <div className="sectionTitle">Mode 7 — Invoicing</div>
-      <div className="hint">{records.length} unpaid record(s) across {poKeys.length} PO(s). Click a row to expand details.</div>
+      <div className="hint">{records.length} unpaid record(s). Click a row to expand per-size breakdown.</div>
 
       {hasSelection && (
-        <div className="summaryPanel" style={{ marginTop: 12, marginBottom: 16, position: "sticky", top: 0, zIndex: 10, background: "white", borderBottom: "2px solid #2563eb", padding: 12, borderRadius: 8 }}>
-          <div className="summaryPanelTitle">{selectedCount} record(s) selected</div>
-          <table className="matrix2 matrixSimple" style={{ marginTop: 8 }}>
-            <tbody>
-              <tr>
-                <td className="locCell">Invoice Amount</td>
-                <td className="cellRead strong">{money(grandInvoice)}</td>
-              </tr>
-              <tr>
-                <td className="locCell">Credits (shortage + credit)</td>
-                <td className="cellRead">{money(grandShortage + grandCredit)}</td>
-              </tr>
-              <tr>
-                <td className="locCell">Paid</td>
-                <td className="cellRead">{money(grandPaid)}</td>
-              </tr>
-              <tr style={{ fontWeight: 700, fontSize: 15 }}>
-                <td className="locCell">Balance Due</td>
-                <td className="cellRead" style={{ color: grandBalance > 0 ? "#dc2626" : "#16a34a" }}>{money(grandBalance)}</td>
-              </tr>
-            </tbody>
-          </table>
+        <div style={{ marginTop: 8, marginBottom: 12, position: "sticky", top: 0, zIndex: 10, background: "white", borderBottom: "2px solid #2563eb", padding: "8px 12px", borderRadius: 8, display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap", fontSize: 13 }}>
+          <span style={{ fontWeight: 600 }}>{selectedCount} selected</span>
+          <span>Invoice: <b>{money(grandInvoice)}</b></span>
+          <span>Credits: <b>{money(grandShortage + grandCredit)}</b></span>
+          <span>Paid: <b>{money(grandPaid)}</b></span>
+          <span>Balance: <b style={{ color: grandBalance > 0 ? "#dc2626" : "#16a34a" }}>{money(grandBalance)}</b></span>
         </div>
       )}
 
-      {poKeys.map((po) => {
-        const poRecords = byPo[po];
-        const poBalance = poRecords.reduce((a, r) => a + Number(r.balance ?? 0), 0);
-        const allSelected = poRecords.every((r) => selected[r.id]);
-
-        return (
-          <div key={po} style={{ marginBottom: 16 }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 15, fontWeight: 600, marginBottom: 4, borderBottom: "2px solid #e5e7eb", paddingBottom: 4 }}>
-              <span>{po}</span>
-              <span style={{ fontSize: 13, fontWeight: 400, color: "#6b7280" }}>({poRecords.length} item{poRecords.length !== 1 ? "s" : ""})</span>
-              <span style={{ fontSize: 13, color: "#dc2626", fontWeight: 600 }}>{money(poBalance)}</span>
-              <button className="linkBtn" style={{ marginLeft: "auto", fontSize: 12 }} onClick={() => allSelected ? onDeselectAllPo(po) : onSelectAllPo(po)}>
-                {allSelected ? "Deselect All" : "Select All"}
-              </button>
-            </div>
-
-            {poRecords.map((rec) => {
+      <div style={{ overflowX: "auto", marginTop: 8 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr style={{ background: "#f9fafb" }}>
+              <th style={{ ...thStyle, width: 28, textAlign: "center" }}>
+                <input
+                  type="checkbox"
+                  checked={records.length > 0 && records.every((r) => selected[r.id])}
+                  onChange={() => {
+                    const allSel = records.every((r) => selected[r.id]);
+                    const byPo = {};
+                    for (const r of records) { const po = r.po || "(No PO)"; if (!byPo[po]) byPo[po] = []; byPo[po].push(r); }
+                    for (const po of Object.keys(byPo)) { allSel ? onDeselectAllPo(po) : onSelectAllPo(po); }
+                  }}
+                  style={{ width: 14, height: 14 }}
+                />
+              </th>
+              <th style={thStyle}>Product</th>
+              <th style={thStyle}>PO</th>
+              <th style={thStyle}>Vendor</th>
+              <th style={{ ...thStyle, textAlign: "right" }}>Ship</th>
+              <th style={{ ...thStyle, textAlign: "right" }}>Rec</th>
+              <th style={{ ...thStyle, textAlign: "right" }}>Invoice</th>
+              <th style={{ ...thStyle, textAlign: "right" }}>Credits</th>
+              <th style={{ ...thStyle, textAlign: "right" }}>Paid</th>
+              <th style={{ ...thStyle, textAlign: "right" }}>Balance</th>
+            </tr>
+          </thead>
+          <tbody>
+            {records.map((rec) => {
               const isSelected = !!selected[rec.id];
               const isExpanded = !!expanded[rec.id];
+              const credits = Number(rec.shortageAdjustment ?? 0) + Number(rec.creditAmount ?? 0);
               const unitCost = Number(rec.unitCost ?? 0);
+              const rowBg = isSelected ? "#eff6ff" : undefined;
 
               return (
-                <div key={rec.id} style={{ marginBottom: 2, border: isSelected ? "2px solid #2563eb" : "1px solid #e5e7eb", borderRadius: 6, overflow: "hidden" }}>
-                  {/* Collapsed row */}
-                  <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 10px", background: isSelected ? "#eff6ff" : "#fff", cursor: "pointer", fontSize: 12 }} onClick={() => toggleExpand(rec.id)}>
-                    <input
-                      type="checkbox"
-                      checked={isSelected}
-                      onChange={() => onToggleSelect(rec.id)}
-                      onClick={(e) => e.stopPropagation()}
-                      style={{ width: 15, height: 15, flexShrink: 0 }}
-                    />
-                    <span style={{ color: "#9ca3af", flexShrink: 0 }}>{isExpanded ? "\u25BC" : "\u25B6"}</span>
-                    <div style={{ flex: 1, minWidth: 0, fontWeight: 500, fontSize: 13, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{rec.label}</div>
-                    <span style={{ color: "#6b7280", flexShrink: 0 }} title="Invoice">{money(rec.invoiceAmount)}</span>
-                    <span style={{ color: "#6b7280", flexShrink: 0 }} title="Credits (shortage + credit)">−{money(Number(rec.shortageAdjustment ?? 0) + Number(rec.creditAmount ?? 0))}</span>
-                    <span style={{ color: "#6b7280", flexShrink: 0 }} title="Paid">Pd {money(rec.paid)}</span>
-                    <span style={{ fontWeight: 600, flexShrink: 0, color: rec.balance > 0 ? "#dc2626" : "#16a34a" }} title="Balance">{money(rec.balance)}</span>
-                  </div>
-
-                  {/* Expanded detail */}
+                <Fragment key={rec.id}>
+                  <tr style={{ background: rowBg, cursor: "pointer" }} onClick={() => toggleExpand(rec.id)}>
+                    <td style={{ ...tdStyle, textAlign: "center" }}>
+                      <input
+                        type="checkbox"
+                        checked={isSelected}
+                        onChange={() => onToggleSelect(rec.id)}
+                        onClick={(e) => e.stopPropagation()}
+                        style={{ width: 14, height: 14 }}
+                      />
+                    </td>
+                    <td style={{ ...tdStyle, fontWeight: 500, maxWidth: 220, overflow: "hidden", textOverflow: "ellipsis" }}>
+                      <span style={{ color: "#9ca3af", fontSize: 10, marginRight: 4 }}>{isExpanded ? "\u25BC" : "\u25B6"}</span>
+                      {rec.label}
+                    </td>
+                    <td style={tdStyle}>{rec.po}</td>
+                    <td style={{ ...tdStyle, color: "#6b7280" }}>{rec.vendor}</td>
+                    <td style={numTd}>{rec.shipUnits ?? 0}</td>
+                    <td style={numTd}>{rec.recUnits ?? 0}</td>
+                    <td style={numTd}>{money(rec.invoiceAmount)}</td>
+                    <td style={numTd}>{credits ? money(credits) : ""}</td>
+                    <td style={numTd}>{rec.paid ? money(rec.paid) : ""}</td>
+                    <td style={{ ...numTd, fontWeight: 600, color: rec.balance > 0 ? "#dc2626" : "#16a34a" }}>{money(rec.balance)}</td>
+                  </tr>
                   {isExpanded && (() => {
                     const buyRow = sizes.map((s) => Number(rec.buy?.[s] ?? 0));
                     const shipRow = sizes.map((s) => Number(rec.ship?.[s] ?? 0));
@@ -2300,57 +2299,52 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
                     const recTotal = recRow.reduce((a, b) => a + b, 0);
 
                     return (
-                      <div style={{ borderTop: "1px solid #e5e7eb", padding: "8px 10px", background: "#f9fafb" }}>
-                        <div style={{ fontSize: 12, color: "#6b7280", marginBottom: 6 }}>
-                          Unit Cost: {money(unitCost)} | Paid: {money(rec.paid)} | Credit: {money(rec.creditAmount)} | Final Cost: {money(rec.finalCost)}
-                        </div>
-                        <table className="matrix2 matrixSimple">
-                          <thead>
-                            <tr>
-                              <th className="c-loc"></th>
-                              {sizes.map((s) => (
-                                <th key={s} className="c-size2">{s}</th>
-                              ))}
-                              <th className="c-rowtotal">Total</th>
-                              <th className="c-rowtotal">Cost</th>
-                            </tr>
-                          </thead>
-                          <tbody>
-                            <tr>
-                              <td className="locCell subtleRow">Bought</td>
-                              {buyRow.map((v, i) => (
-                                <td key={sizes[i]} className="cellRead">{v}</td>
-                              ))}
-                              <td className="cellRead strong">{buyTotal}</td>
-                              <td className="cellRead strong">{money(buyTotal * unitCost)}</td>
-                            </tr>
-                            <tr>
-                              <td className="locCell subtleRow">Shipped</td>
-                              {shipRow.map((v, i) => (
-                                <td key={sizes[i]} className="cellRead">{v}</td>
-                              ))}
-                              <td className="cellRead strong">{shipTotal}</td>
-                              <td className="cellRead strong">{money(shipTotal * unitCost)}</td>
-                            </tr>
-                            <tr>
-                              <td className="locCell">Received</td>
-                              {recRow.map((v, i) => (
-                                <td key={sizes[i]} className="cellRead">{v}</td>
-                              ))}
-                              <td className="cellRead strong">{recTotal}</td>
-                              <td className="cellRead strong">{money(recTotal * unitCost)}</td>
-                            </tr>
-                          </tbody>
-                        </table>
-                      </div>
+                      <tr>
+                        <td colSpan={10} style={{ padding: 0 }}>
+                          <div style={{ padding: "8px 12px 8px 36px", background: "#f9fafb", borderBottom: "1px solid #e5e7eb" }}>
+                            <table style={{ borderCollapse: "collapse", fontSize: 11, width: "auto" }}>
+                              <thead>
+                                <tr>
+                                  <th style={{ padding: "2px 8px", textAlign: "left", color: "#9ca3af", fontWeight: 500 }}></th>
+                                  {sizes.map((s) => (
+                                    <th key={s} style={{ padding: "2px 8px", textAlign: "right", color: "#9ca3af", fontWeight: 500 }}>{s}</th>
+                                  ))}
+                                  <th style={{ padding: "2px 8px", textAlign: "right", color: "#6b7280", fontWeight: 600 }}>Total</th>
+                                  <th style={{ padding: "2px 8px", textAlign: "right", color: "#6b7280", fontWeight: 600 }}>Cost</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                <tr>
+                                  <td style={{ padding: "2px 8px", color: "#6b7280" }}>Buy</td>
+                                  {buyRow.map((v, i) => <td key={sizes[i]} style={{ padding: "2px 8px", textAlign: "right" }}>{v || ""}</td>)}
+                                  <td style={{ padding: "2px 8px", textAlign: "right", fontWeight: 600 }}>{buyTotal}</td>
+                                  <td style={{ padding: "2px 8px", textAlign: "right", fontWeight: 600 }}>{money(buyTotal * unitCost)}</td>
+                                </tr>
+                                <tr>
+                                  <td style={{ padding: "2px 8px", color: "#6b7280" }}>Ship</td>
+                                  {shipRow.map((v, i) => <td key={sizes[i]} style={{ padding: "2px 8px", textAlign: "right" }}>{v || ""}</td>)}
+                                  <td style={{ padding: "2px 8px", textAlign: "right", fontWeight: 600 }}>{shipTotal}</td>
+                                  <td style={{ padding: "2px 8px", textAlign: "right", fontWeight: 600 }}>{money(shipTotal * unitCost)}</td>
+                                </tr>
+                                <tr>
+                                  <td style={{ padding: "2px 8px", color: "#6b7280" }}>Rec</td>
+                                  {recRow.map((v, i) => <td key={sizes[i]} style={{ padding: "2px 8px", textAlign: "right" }}>{v || ""}</td>)}
+                                  <td style={{ padding: "2px 8px", textAlign: "right", fontWeight: 600 }}>{recTotal}</td>
+                                  <td style={{ padding: "2px 8px", textAlign: "right", fontWeight: 600 }}>{money(recTotal * unitCost)}</td>
+                                </tr>
+                              </tbody>
+                            </table>
+                          </div>
+                        </td>
+                      </tr>
                     );
                   })()}
-                </div>
+                </Fragment>
               );
             })}
-          </div>
-        );
-      })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

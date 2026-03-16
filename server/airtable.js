@@ -33,6 +33,7 @@ const INVOICE_AMOUNT_FIELD = process.env.AIRTABLE_INVOICE_AMOUNT_FIELD || "Invoi
 const FINAL_COST_FIELD = process.env.AIRTABLE_FINAL_COST_FIELD || "Final Cost";
 const BALANCE_FIELD = process.env.AIRTABLE_BALANCE_FIELD || "Balance";
 const SHORTAGE_ADJUSTMENT_FIELD = process.env.AIRTABLE_SHORTAGE_ADJUSTMENT_FIELD || "ShortageAdjustment";
+const VENDOR_FIELD = process.env.AIRTABLE_VENDOR_FIELD || "Vendor";
 
 // Office Samples fields
 const OFFICE_SENT_FIELD = process.env.AIRTABLE_OFFICE_SENT_FIELD || "Office_Sent";
@@ -189,7 +190,7 @@ export async function listUnpaidRecords() {
   const fields = [
     PO_FIELD, ATTACH_FIELD, UNIT_COST_FIELD, SHIP_DATE_FIELD, DELIVERY_FIELD,
     TRACKING_NUMBER_FIELD, PAID_FIELD, CREDIT_AMOUNT_FIELD, INVOICE_AMOUNT_FIELD,
-    FINAL_COST_FIELD, BALANCE_FIELD, SHORTAGE_ADJUSTMENT_FIELD,
+    FINAL_COST_FIELD, BALANCE_FIELD, SHORTAGE_ADJUSTMENT_FIELD, VENDOR_FIELD,
     ...LABEL_FIELDS,
     ...sizes.flatMap((s) => [`Buy_${s}`, `Ship_${s}`, `Rec_${s}`])
   ];
@@ -218,10 +219,15 @@ export async function listUnpaidRecords() {
         ship[s] = Number(f[`Ship_${s}`] ?? 0);
         rec[s] = Number(f[`Rec_${s}`] ?? 0);
       }
+      const shipUnits = sizes.reduce((sum, s) => sum + ship[s], 0);
+      const recUnits = sizes.reduce((sum, s) => sum + rec[s], 0);
+      const vendorRaw = f[VENDOR_FIELD];
+      const vendor = Array.isArray(vendorRaw) ? vendorRaw.join(", ") : String(vendorRaw || "");
       allRecords.push({
         id: r.id,
         po: f[PO_FIELD] || "",
         label: buildLabel(f),
+        vendor,
         imageUrl: pickAttachmentUrl(f[ATTACH_FIELD]),
         unitCost: Number(f[UNIT_COST_FIELD] ?? 0),
         shipDate: f[SHIP_DATE_FIELD] ?? null,
@@ -233,6 +239,7 @@ export async function listUnpaidRecords() {
         invoiceAmount: Number(f[INVOICE_AMOUNT_FIELD] ?? 0),
         finalCost: Number(f[FINAL_COST_FIELD] ?? 0),
         balance: Number(f[BALANCE_FIELD] ?? 0),
+        shipUnits, recUnits,
         buy, ship, rec
       });
     }
