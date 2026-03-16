@@ -32,6 +32,7 @@ const CREDIT_AMOUNT_FIELD = process.env.AIRTABLE_CREDIT_AMOUNT_FIELD || "Credit 
 const INVOICE_AMOUNT_FIELD = process.env.AIRTABLE_INVOICE_AMOUNT_FIELD || "Invoice Amount";
 const FINAL_COST_FIELD = process.env.AIRTABLE_FINAL_COST_FIELD || "Final Cost";
 const BALANCE_FIELD = process.env.AIRTABLE_BALANCE_FIELD || "Balance";
+const SHORTAGE_ADJUSTMENT_FIELD = process.env.AIRTABLE_SHORTAGE_ADJUSTMENT_FIELD || "ShortageAdjustment";
 
 // Office Samples fields
 const OFFICE_SENT_FIELD = process.env.AIRTABLE_OFFICE_SENT_FIELD || "Office_Sent";
@@ -188,7 +189,7 @@ export async function listUnpaidRecords() {
   const fields = [
     PO_FIELD, ATTACH_FIELD, UNIT_COST_FIELD, SHIP_DATE_FIELD, DELIVERY_FIELD,
     TRACKING_NUMBER_FIELD, PAID_FIELD, CREDIT_AMOUNT_FIELD, INVOICE_AMOUNT_FIELD,
-    FINAL_COST_FIELD, BALANCE_FIELD,
+    FINAL_COST_FIELD, BALANCE_FIELD, SHORTAGE_ADJUSTMENT_FIELD,
     ...LABEL_FIELDS,
     ...sizes.flatMap((s) => [`Buy_${s}`, `Ship_${s}`, `Rec_${s}`])
   ];
@@ -228,6 +229,7 @@ export async function listUnpaidRecords() {
         trackingNumber: f[TRACKING_NUMBER_FIELD] ?? "",
         paid: Number(f[PAID_FIELD] ?? 0),
         creditAmount: Number(f[CREDIT_AMOUNT_FIELD] ?? 0),
+        shortageAdjustment: Number(f[SHORTAGE_ADJUSTMENT_FIELD] ?? 0),
         invoiceAmount: Number(f[INVOICE_AMOUNT_FIELD] ?? 0),
         finalCost: Number(f[FINAL_COST_FIELD] ?? 0),
         balance: Number(f[BALANCE_FIELD] ?? 0),
