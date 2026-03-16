@@ -181,6 +181,64 @@ export async function listRecordsByShopifyGid(gid) {
   }));
 }
 
+/** List all records where Balance > 0 (unpaid). Handles Airtable pagination. */
+export async function listUnpaidRecords() {
+  const formula = `{${BALANCE_FIELD}}>0`;
+
+  const fields = [
+    PO_FIELD, ATTACH_FIELD, UNIT_COST_FIELD, SHIP_DATE_FIELD, DELIVERY_FIELD,
+    TRACKING_NUMBER_FIELD, PAID_FIELD, CREDIT_AMOUNT_FIELD, INVOICE_AMOUNT_FIELD,
+    FINAL_COST_FIELD, BALANCE_FIELD,
+    ...LABEL_FIELDS,
+    ...sizes.flatMap((s) => [`Buy_${s}`, `Ship_${s}`, `Rec_${s}`])
+  ];
+
+  let allRecords = [];
+  let offset = null;
+
+  do {
+    const params = new URLSearchParams();
+    params.set("filterByFormula", formula);
+    for (const f of fields) params.append("fields[]", f);
+    if (offset) params.set("offset", offset);
+
+    const url = `${BASE}/${baseId}/${encodeURIComponent(table)}?${params.toString()}`;
+    const res = await fetch(url, { headers: headers() });
+    if (!res.ok) throw new Error(`Airtable list failed (${res.status}): ${await res.text()}`);
+
+    const data = await res.json();
+    offset = data.offset || null;
+
+    for (const r of data.records || []) {
+      const f = r.fields || {};
+      const buy = {}, ship = {}, rec = {};
+      for (const s of sizes) {
+        buy[s] = Number(f[`Buy_${s}`] ?? 0);
+        ship[s] = Number(f[`Ship_${s}`] ?? 0);
+        rec[s] = Number(f[`Rec_${s}`] ?? 0);
+      }
+      allRecords.push({
+        id: r.id,
+        po: f[PO_FIELD] || "",
+        label: buildLabel(f),
+        imageUrl: pickAttachmentUrl(f[ATTACH_FIELD]),
+        unitCost: Number(f[UNIT_COST_FIELD] ?? 0),
+        shipDate: f[SHIP_DATE_FIELD] ?? null,
+        delivery: f[DELIVERY_FIELD] ?? null,
+        trackingNumber: f[TRACKING_NUMBER_FIELD] ?? "",
+        paid: Number(f[PAID_FIELD] ?? 0),
+        creditAmount: Number(f[CREDIT_AMOUNT_FIELD] ?? 0),
+        invoiceAmount: Number(f[INVOICE_AMOUNT_FIELD] ?? 0),
+        finalCost: Number(f[FINAL_COST_FIELD] ?? 0),
+        balance: Number(f[BALANCE_FIELD] ?? 0),
+        buy, ship, rec
+      });
+    }
+  } while (offset);
+
+  return { sizes, records: allRecords };
+}
+
 export const AIRTABLE_FIELDS = {
   SHIP_DATE_FIELD,
   DELIVERY_FIELD,
@@ -191,5 +249,6 @@ export const AIRTABLE_FIELDS = {
   OFFICE_SAMPLE_PHOTO_FIELD,
   TRACKING_NUMBER_FIELD,
   ALLOC_PDF_FIELD,
-  RECEIVING_PDF_FIELD
+  RECEIVING_PDF_FIELD,
+  PAID_FIELD
 };
