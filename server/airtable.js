@@ -7,6 +7,7 @@ const table = process.env.AIRTABLE_TABLE_NAME || "Products";
 const sizes = (process.env.SIZES || "XXS,XS,S,M,L,XL").split(",").map((s) => s.trim());
 
 const PO_FIELD = process.env.AIRTABLE_PO_FIELD || "PO #";
+const PRODUCT_FIELD = process.env.AIRTABLE_PRODUCT_FIELD || "Product";
 const ATTACH_FIELD = process.env.AIRTABLE_IMAGE_FIELD || "Product or Swatch";
 const UNIT_COST_FIELD = process.env.AIRTABLE_UNIT_COST_FIELD || "Unit Cost";
 const SHIP_DATE_FIELD = process.env.AIRTABLE_SHIP_DATE_FIELD || "Ship Date";
@@ -183,15 +184,15 @@ export async function listRecordsByShopifyGid(gid) {
   }));
 }
 
-/** List all records where Balance > 0 (unpaid). Handles Airtable pagination. */
-export async function listUnpaidRecords() {
-  const formula = `{${BALANCE_FIELD}}>0`;
+/** List all invoicing records (shipped). Handles Airtable pagination. */
+export async function listInvoicingRecords() {
+  // Fetch all records that have an invoice amount (i.e. shipped units > 0)
+  const formula = `{${INVOICE_AMOUNT_FIELD}}>0`;
 
   const fields = [
-    PO_FIELD, ATTACH_FIELD, UNIT_COST_FIELD, SHIP_DATE_FIELD, DELIVERY_FIELD,
+    PO_FIELD, PRODUCT_FIELD, ATTACH_FIELD, UNIT_COST_FIELD, SHIP_DATE_FIELD, DELIVERY_FIELD,
     TRACKING_NUMBER_FIELD, PAID_FIELD, CREDIT_AMOUNT_FIELD, INVOICE_AMOUNT_FIELD,
     FINAL_COST_FIELD, BALANCE_FIELD, SHORTAGE_ADJUSTMENT_FIELD, VENDOR_FIELD,
-    ...LABEL_FIELDS,
     ...sizes.flatMap((s) => [`Buy_${s}`, `Ship_${s}`, `Rec_${s}`])
   ];
 
@@ -224,10 +225,11 @@ export async function listUnpaidRecords() {
       const recUnits = sizes.reduce((sum, s) => sum + rec[s], 0);
       const vendorRaw = f[VENDOR_FIELD];
       const vendor = Array.isArray(vendorRaw) ? vendorRaw.join(", ") : String(vendorRaw || "");
+      const productName = f[PRODUCT_FIELD] || "";
       allRecords.push({
         id: r.id,
         po: f[PO_FIELD] || "",
-        label: buildLabel(f),
+        label: productName || "(Untitled)",
         vendor,
         imageUrl: pickAttachmentUrl(f[ATTACH_FIELD]),
         unitCost: Number(f[UNIT_COST_FIELD] ?? 0),

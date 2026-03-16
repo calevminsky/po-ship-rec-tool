@@ -5,7 +5,7 @@ import cookieParser from "cookie-parser";
 import archiver from "archiver";
 import { PDFDocument } from "pdf-lib";
 
-import { listRecordsByPO, updateRecord, getSizes, AIRTABLE_FIELDS, listRecordsByShopifyGid, listUnpaidRecords } from "./airtable.js";
+import { listRecordsByPO, updateRecord, getSizes, AIRTABLE_FIELDS, listRecordsByShopifyGid, listInvoicingRecords } from "./airtable.js";
 import {
   getLocations,
   lookupVariantByBarcode,
@@ -14,7 +14,7 @@ import {
   searchProductsByTitle
 } from "./shopify.js";
 
-import { buildCloseoutPdf, buildAllocationPdf, buildOfficeSamplesPdf } from "./pdf.js";
+import { buildCloseoutPdf, buildAllocationPdf, buildOfficeSamplesPdf, buildInvoicingPdf } from "./pdf.js";
 
 import { buildAuthorizeUrl, exchangeCodeForToken, makeState } from "./shopifyAuth.js";
 import { setShopifyAccessToken, hasShopifyAccessToken, getShopifyAccessToken } from "./shopifyTokenStore.js";
@@ -123,10 +123,10 @@ app.get("/api/po/:po", requireAuth, async (req, res) => {
   }
 });
 
-// ---- Invoicing: get all unpaid records ----
-app.get("/api/invoicing/unpaid", requireAuth, async (req, res) => {
+// ---- Invoicing: get all invoicing records ----
+app.get("/api/invoicing/records", requireAuth, async (req, res) => {
   try {
-    const data = await listUnpaidRecords();
+    const data = await listInvoicingRecords();
     res.json({ ok: true, ...data });
   } catch (e) {
     res.status(500).json({ error: e.message || "Server error" });
@@ -152,6 +152,22 @@ app.post("/api/invoicing/mark-paid", requireAuth, async (req, res) => {
     res.json({ ok: true, results });
   } catch (e) {
     res.status(500).json({ error: e.message || "Server error" });
+  }
+});
+
+// ---- Invoicing: generate PDF for selected records ----
+app.post("/api/invoicing/pdf", requireAuth, async (req, res) => {
+  try {
+    const { records } = req.body || {};
+    if (!Array.isArray(records) || !records.length) {
+      return res.status(400).json({ error: "records must be a non-empty array" });
+    }
+    const pdfBuffer = await buildInvoicingPdf({ records });
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="invoicing_${Date.now()}.pdf"`);
+    res.send(pdfBuffer);
+  } catch (e) {
+    res.status(500).json({ error: e.message || "PDF generation error" });
   }
 });
 

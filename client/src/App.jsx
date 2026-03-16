@@ -19,7 +19,7 @@ import {
   bulkAllocPdfs,
   bulkAllocMergedPdf,
   fetchRecordsByShopifyGid,
-  fetchUnpaidRecords,
+  fetchInvoicingRecords,
   markRecordsPaid
 } from "./api.js";
 import { computeAllocation } from "./allocationEngine";
@@ -558,15 +558,15 @@ export default function App() {
   const [invSelected, setInvSelected] = useState({}); // { recordId: true/false }
   const [invLoading, setInvLoading] = useState(false);
 
-  async function onLoadUnpaid() {
+  async function onLoadInvoicing() {
     try {
       setInvLoading(true);
-      setStatus("Loading unpaid records…");
-      const data = await fetchUnpaidRecords();
+      setStatus("Loading invoicing records…");
+      const data = await fetchInvoicingRecords();
       setInvRecords(data.records || []);
       setInvSizes(data.sizes || []);
       setInvSelected({});
-      setStatus(`Found ${(data.records || []).length} unpaid record(s).`);
+      setStatus(`Found ${(data.records || []).length} invoicing record(s).`);
     } catch (e) {
       setStatus(`Invoice load failed: ${e.message}`);
     } finally {
@@ -612,7 +612,7 @@ export default function App() {
       await markRecordsPaid(toMark.map((r) => ({ id: r.id, amount: r.finalCost })));
       setStatus(`Marked ${toMark.length} record(s) as paid ✅`);
       // Reload
-      await onLoadUnpaid();
+      await onLoadInvoicing();
     } catch (e) {
       setStatus(`Mark paid failed: ${e.message}`);
       setInvLoading(false);
@@ -1415,7 +1415,7 @@ export default function App() {
                 <button className="btn primary modeBtn" onClick={() => { setMode("product-lookup"); setPlProduct(null); setPlLinkedPOs([]); setPlSearchResults([]); setPlBarcode(""); setPlSearch(""); }}>
                   6) Product Lookup
                 </button>
-                <button className="btn primary modeBtn" onClick={() => { setMode("invoicing"); setInvRecords([]); setInvSelected({}); onLoadUnpaid(); }}>
+                <button className="btn primary modeBtn" onClick={() => { setMode("invoicing"); setInvRecords([]); setInvSelected({}); onLoadInvoicing(); }}>
                   7) Invoicing
                 </button>
                 <div className="hint">After picking a mode, load a PO and select a product.</div>
@@ -1446,7 +1446,7 @@ export default function App() {
                 </div>
                 <div className="divider" />
                 <div className="hint">Showing all unpaid POs. Select records and mark as paid.</div>
-                <button className="btn" onClick={onLoadUnpaid} disabled={invLoading} style={{ width: "100%", marginTop: 6 }}>
+                <button className="btn" onClick={onLoadInvoicing} disabled={invLoading} style={{ width: "100%", marginTop: 6 }}>
                   {invLoading ? "Loading…" : "Refresh"}
                 </button>
                 {Object.values(invSelected).some(Boolean) && (
@@ -2176,6 +2176,8 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
   const [filterVendor, setFilterVendor] = useState("");
   const [filterPo, setFilterPo] = useState("");
   const [filterProduct, setFilterProduct] = useState("");
+  const [hidePaid, setHidePaid] = useState(true);
+  const [pdfLoading, setPdfLoading] = useState(false);
 
   function toggleExpand(id) {
     setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
@@ -2213,6 +2215,7 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
 
   // Filter
   let filtered = records;
+  if (hidePaid) filtered = filtered.filter((r) => Number(r.balance) > 0);
   if (filterVendor) filtered = filtered.filter((r) => r.vendor === filterVendor);
   if (filterPo) filtered = filtered.filter((r) => r.po === filterPo);
   if (filterProduct) filtered = filtered.filter((r) => r.label.toLowerCase().includes(filterProduct.toLowerCase()));
@@ -2267,7 +2270,7 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
   return (
     <div>
       <div className="sectionTitle">Mode 7 — Invoicing</div>
-      <div className="hint">{filtered.length} of {records.length} unpaid record(s). Click a row to expand per-size breakdown.</div>
+      <div className="hint">{filtered.length} of {records.length} record(s). Click a row to expand per-size breakdown.</div>
 
       {/* Filters */}
       <div style={{ display: "flex", gap: 8, marginTop: 8, marginBottom: 8, flexWrap: "wrap", alignItems: "center", fontSize: 12 }}>
@@ -2286,6 +2289,10 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
           <option value="">All Vendors</option>
           {vendorOptions.map((v) => <option key={v} value={v}>{v}</option>)}
         </select>
+        <label style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer", fontSize: 11, color: "#6b7280" }}>
+          <input type="checkbox" checked={hidePaid} onChange={(e) => setHidePaid(e.target.checked)} style={{ width: 13, height: 13 }} />
+          Hide paid
+        </label>
         {(filterProduct || filterPo || filterVendor) && (
           <button className="linkBtn" style={{ fontSize: 11 }} onClick={() => { setFilterProduct(""); setFilterPo(""); setFilterVendor(""); }}>Clear filters</button>
         )}
@@ -2298,6 +2305,42 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
           <span>Credits: <b>{money(grandShortage + grandCredit)}</b></span>
           <span>Paid: <b>{money(grandPaid)}</b></span>
           <span>Balance: <b style={{ color: grandBalance > 0 ? "#dc2626" : "#16a34a" }}>{money(grandBalance)}</b></span>
+          <button
+            className="btn primary"
+            style={{ marginLeft: "auto", fontSize: 12, padding: "4px 12px" }}
+            disabled={pdfLoading}
+            onClick={async () => {
+              try {
+                setPdfLoading(true);
+                const selectedRecords = records.filter((r) => selected[r.id]).map((r) => ({
+                  label: r.label, po: r.po, vendor: r.vendor,
+                  buyUnits: r.buyUnits, shipUnits: r.shipUnits, recUnits: r.recUnits,
+                  delivery: r.delivery,
+                  invoiceAmount: r.invoiceAmount, creditAmount: r.creditAmount,
+                  shortageAdjustment: r.shortageAdjustment, paid: r.paid, balance: r.balance
+                }));
+                const resp = await fetch("/api/invoicing/pdf", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ records: selectedRecords })
+                });
+                if (!resp.ok) throw new Error("PDF generation failed");
+                const blob = await resp.blob();
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `invoicing_${Date.now()}.pdf`;
+                a.click();
+                URL.revokeObjectURL(url);
+              } catch (e) {
+                alert("PDF export failed: " + e.message);
+              } finally {
+                setPdfLoading(false);
+              }
+            }}
+          >
+            {pdfLoading ? "Generating…" : "Export PDF"}
+          </button>
         </div>
       )}
 
