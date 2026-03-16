@@ -375,6 +375,14 @@ app.post("/api/closeout", requireAuth, async (req, res) => {
       ship: ship || {}
     });
 
+    // Upload closeout PDF to Airtable "Receiving PDFs" field (non-blocking, non-fatal)
+    if (recordId) {
+      const pdfFilename = `closeout_${po || "PO"}_${Date.now()}.pdf`;
+      uploadPdfToAirtable(recordId, pdfBuffer, pdfFilename, AIRTABLE_FIELDS.RECEIVING_PDF_FIELD).catch((e) => {
+        console.error("[closeout] Airtable PDF upload failed:", e.message);
+      });
+    }
+
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename="closeout_${po || "PO"}_${Date.now()}.pdf"`);
     res.send(pdfBuffer);
@@ -384,7 +392,7 @@ app.post("/api/closeout", requireAuth, async (req, res) => {
 });
 
 // ---- Allocation PDF only ----
-async function uploadPdfToAirtable(recordId, pdfBuffer, filename) {
+async function uploadPdfToAirtable(recordId, pdfBuffer, filename, airtableField) {
   const APP_URL = process.env.APP_URL;
   if (!APP_URL) return; // silently skip if no APP_URL configured
 
@@ -394,7 +402,7 @@ async function uploadPdfToAirtable(recordId, pdfBuffer, filename) {
 
   const pdfUrl = `${APP_URL}/api/temp-photo/${tempId}`;
   await updateRecord(recordId, {
-    [AIRTABLE_FIELDS.ALLOC_PDF_FIELD]: [{ url: pdfUrl, filename }]
+    [airtableField]: [{ url: pdfUrl, filename }]
   });
 }
 
@@ -425,7 +433,7 @@ app.post("/api/allocation-pdf", requireAuth, async (req, res) => {
     // Upload PDF to Airtable attachment field (non-blocking, non-fatal)
     if (recordId) {
       const pdfFilename = `allocation_${po || "PO"}_${Date.now()}.pdf`;
-      uploadPdfToAirtable(recordId, pdfBuffer, pdfFilename).catch((e) => {
+      uploadPdfToAirtable(recordId, pdfBuffer, pdfFilename, AIRTABLE_FIELDS.ALLOC_PDF_FIELD).catch((e) => {
         console.error("[allocation-pdf] Airtable PDF upload failed:", e.message);
       });
     }
