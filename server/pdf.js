@@ -321,3 +321,122 @@ export async function buildOfficeSamplesPdf({ entries, reportDate }) {
   doc.end();
   return done;
 }
+
+// ════════════════════════════════════════════════════════════════════════════
+//  Invoicing PDF
+// ════════════════════════════════════════════════════════════════════════════
+function fmtMoney(v) {
+  const n = Number(v ?? 0);
+  return n ? "$" + n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ",") : "";
+}
+
+export function buildInvoicingPdf({ records }) {
+  const doc = new PDFDocument({ margin: 30, size: "A4", layout: "landscape" });
+  const buffers = [];
+  const done = new Promise((resolve, reject) => {
+    doc.on("data", (b) => buffers.push(b));
+    doc.on("end", () => resolve(Buffer.concat(buffers)));
+    doc.on("error", reject);
+  });
+
+  // Title
+  doc.font("Helvetica-Bold").fontSize(14).fillColor(TEXT).text("Invoicing Summary", { align: "center" });
+  doc.font("Helvetica").fontSize(9).fillColor("#666666").text(`Generated: ${new Date().toLocaleDateString()}  |  ${records.length} record(s)`, { align: "center" });
+  doc.moveDown(0.5);
+
+  // Table columns: Product, PO, Vendor, Buy, Ship, Rec, Rec Date, Invoice, Credits, Paid, Balance
+  const colWidths = [160, 52, 72, 38, 38, 38, 55, 68, 60, 68, 68];
+  const hdrs = ["Product", "PO", "Vendor", "Buy", "Ship", "Rec", "Rec Date", "Invoice", "Credits", "Paid", "Balance"];
+  const rowHeight = 16;
+  const tableX = 30;
+  let cy = doc.y + 4;
+
+  function drawHeaderRow() {
+    const totalWidth = colWidths.reduce((a, b) => a + b, 0);
+    doc.rect(tableX, cy, totalWidth, rowHeight).fill(TBL_HDR_BG);
+    let cx = tableX;
+    for (let c = 0; c < hdrs.length; c++) {
+      doc.rect(cx, cy, colWidths[c], rowHeight).stroke(BORDER);
+      doc.font("Helvetica-Bold").fontSize(8).fillColor(TBL_HDR_TXT)
+        .text(hdrs[c], cx + 3, cy + 3, { width: colWidths[c] - 6, align: c >= 3 ? "right" : "left", lineBreak: false });
+      cx += colWidths[c];
+    }
+    cy += rowHeight;
+  }
+
+  function drawDataRow(rec, idx) {
+    const totalWidth = colWidths.reduce((a, b) => a + b, 0);
+    const isAlt = idx % 2 === 1;
+    if (isAlt) doc.rect(tableX, cy, totalWidth, rowHeight).fill(ALT_ROW);
+
+    const credits = Number(rec.shortageAdjustment ?? 0) + Number(rec.creditAmount ?? 0);
+    const cells = [
+      rec.label || "", rec.po || "", rec.vendor || "",
+      rec.buyUnits ?? 0, rec.shipUnits ?? 0, rec.recUnits ?? 0,
+      rec.delivery ? fmtDate(rec.delivery) : "",
+      fmtMoney(rec.invoiceAmount), credits ? fmtMoney(credits) : "",
+      rec.paid ? fmtMoney(rec.paid) : "",
+      fmtMoney(rec.balance)
+    ];
+
+    let cx = tableX;
+    for (let c = 0; c < cells.length; c++) {
+      doc.rect(cx, cy, colWidths[c], rowHeight).stroke(BORDER);
+      const isBal = c === cells.length - 1;
+      doc.font(isBal ? "Helvetica-Bold" : "Helvetica").fontSize(8)
+        .fillColor(isBal && Number(rec.balance) > 0 ? "#cc0000" : TEXT)
+        .text(String(cells[c]), cx + 3, cy + 3, { width: colWidths[c] - 6, align: c >= 3 ? "right" : "left", lineBreak: false });
+      cx += colWidths[c];
+    }
+    cy += rowHeight;
+  }
+
+  function drawTotalsRow() {
+    const totalWidth = colWidths.reduce((a, b) => a + b, 0);
+    doc.rect(tableX, cy, totalWidth, rowHeight).fill(TOTAL_BG);
+
+    let totInvoice = 0, totCredits = 0, totPaid = 0, totBalance = 0;
+    for (const r of records) {
+      totInvoice += Number(r.invoiceAmount ?? 0);
+      totCredits += Number(r.shortageAdjustment ?? 0) + Number(r.creditAmount ?? 0);
+      totPaid += Number(r.paid ?? 0);
+      totBalance += Number(r.balance ?? 0);
+    }
+
+    const cells = ["TOTAL", "", "", "", "", "", "", fmtMoney(totInvoice), fmtMoney(totCredits), fmtMoney(totPaid), fmtMoney(totBalance)];
+    let cx = tableX;
+    for (let c = 0; c < cells.length; c++) {
+      doc.rect(cx, cy, colWidths[c], rowHeight).stroke(BORDER);
+      doc.font("Helvetica-Bold").fontSize(8).fillColor(TEXT)
+        .text(String(cells[c]), cx + 3, cy + 3, { width: colWidths[c] - 6, align: c >= 3 ? "right" : "left", lineBreak: false });
+      cx += colWidths[c];
+    }
+    cy += rowHeight;
+  }
+
+  drawHeaderRow();
+  for (let i = 0; i < records.length; i++) {
+    if (cy + rowHeight * 2 > doc.page.height - 30) {
+      doc.addPage({ margin: 30, size: "A4", layout: "landscape" });
+      cy = 30;
+      drawHeaderRow();
+    }
+    drawDataRow(records[i], i);
+  }
+  if (cy + rowHeight > doc.page.height - 30) {
+    doc.addPage({ margin: 30, size: "A4", layout: "landscape" });
+    cy = 30;
+    drawHeaderRow();
+  }
+  drawTotalsRow();
+
+  // Signature line
+  const sigY = Math.min(cy + 40, doc.page.height - 60);
+  doc.moveTo(tableX, sigY).lineTo(tableX + 200, sigY).stroke("#999999");
+  doc.font("Helvetica").fontSize(8).fillColor("#999999").text("Approved by", tableX, sigY + 4);
+  doc.moveTo(tableX + 300, sigY).lineTo(tableX + 500, sigY).stroke("#999999");
+  doc.font("Helvetica").fontSize(8).fillColor("#999999").text("Date", tableX + 300, sigY + 4);
+
+  doc.end();
+  return done;
+}

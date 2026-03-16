@@ -185,10 +185,10 @@ export async function fetchRecordsByShopifyGid(gid) {
   return j;
 }
 
-export async function fetchUnpaidRecords() {
-  const r = await fetch("/api/invoicing/unpaid");
+export async function fetchInvoicingRecords() {
+  const r = await fetch("/api/invoicing/records");
   const j = await r.json();
-  if (!r.ok) throw new Error(j.error || "Failed to load unpaid records");
+  if (!r.ok) throw new Error(j.error || "Failed to load invoicing records");
   return j;
 }
 
