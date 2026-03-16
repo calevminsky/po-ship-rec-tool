@@ -2144,26 +2144,24 @@ function InvoicingPanel({ data, selected, onToggleSelect }) {
   // Compute grand totals across all selected records
   let grandBought = 0, grandShipped = 0, grandReceived = 0;
   let grandBoughtCost = 0, grandShippedCost = 0, grandReceivedCost = 0;
+  let grandPaid = 0, grandCredit = 0, grandBalance = 0;
 
-  const allRecords = [];
   for (const poGroup of data.results) {
     for (const rec of poGroup.records) {
-      const sizes = poGroup.sizes || [];
-      const unitCost = Number(rec.unitCost ?? 0);
-      let boughtTotal = 0, shippedTotal = 0, receivedTotal = 0;
-      for (const s of sizes) {
-        boughtTotal += Number(rec.buy?.[s] ?? 0);
-        shippedTotal += Number(rec.ship?.[s] ?? 0);
-        receivedTotal += Number(rec.rec?.[s] ?? 0);
-      }
-      allRecords.push({ ...rec, po: poGroup.po, sizes, boughtTotal, shippedTotal, receivedTotal, unitCost });
       if (selected[rec.id]) {
-        grandBought += boughtTotal;
-        grandShipped += shippedTotal;
-        grandReceived += receivedTotal;
-        grandBoughtCost += boughtTotal * unitCost;
-        grandShippedCost += shippedTotal * unitCost;
-        grandReceivedCost += receivedTotal * unitCost;
+        const sizes = poGroup.sizes || [];
+        const unitCost = Number(rec.unitCost ?? 0);
+        for (const s of sizes) {
+          grandBought += Number(rec.buy?.[s] ?? 0);
+          grandShipped += Number(rec.ship?.[s] ?? 0);
+          grandReceived += Number(rec.rec?.[s] ?? 0);
+        }
+        grandBoughtCost += Number(rec.buy ? Object.values(rec.buy).reduce((a, b) => a + Number(b), 0) : 0) * unitCost;
+        grandShippedCost += Number(rec.invoiceAmount ?? 0);
+        grandReceivedCost += Number(rec.finalCost ?? 0);
+        grandPaid += Number(rec.paid ?? 0);
+        grandCredit += Number(rec.creditAmount ?? 0);
+        grandBalance += Number(rec.balance ?? 0);
       }
     }
   }
@@ -2197,15 +2195,34 @@ function InvoicingPanel({ data, selected, onToggleSelect }) {
                 <td className="cellRead">{grandShipped}</td>
                 <td className="cellRead">{money(grandShippedCost)}</td>
               </tr>
-              <tr style={{ fontWeight: 600 }}>
+              <tr>
                 <td className="locCell">Received</td>
                 <td className="cellRead">{grandReceived}</td>
                 <td className="cellRead">{money(grandReceivedCost)}</td>
               </tr>
             </tbody>
           </table>
-          <div style={{ marginTop: 8, fontSize: 13, color: "#6b7280" }}>
-            Amount to pay (based on received): <strong>{money(grandReceivedCost)}</strong>
+          <div style={{ marginTop: 10, borderTop: "1px solid #e5e7eb", paddingTop: 8 }}>
+            <table className="matrix2 matrixSimple">
+              <tbody>
+                <tr>
+                  <td className="locCell">Final Cost (Rec × Unit)</td>
+                  <td className="cellRead strong">{money(grandReceivedCost)}</td>
+                </tr>
+                <tr>
+                  <td className="locCell">Already Paid</td>
+                  <td className="cellRead">{money(grandPaid)}</td>
+                </tr>
+                <tr>
+                  <td className="locCell">Credits</td>
+                  <td className="cellRead">{money(grandCredit)}</td>
+                </tr>
+                <tr style={{ fontWeight: 700, fontSize: 15 }}>
+                  <td className="locCell">Balance Due</td>
+                  <td className="cellRead" style={{ color: grandBalance > 0 ? "#dc2626" : "#16a34a" }}>{money(grandBalance)}</td>
+                </tr>
+              </tbody>
+            </table>
           </div>
         </div>
       )}
@@ -2240,7 +2257,9 @@ function InvoicingPanel({ data, selected, onToggleSelect }) {
                   />
                   <div style={{ flex: 1 }}>
                     <div style={{ fontWeight: 600, fontSize: 14 }}>{rec.label}</div>
-                    <div style={{ fontSize: 12, color: "#6b7280" }}>Unit Cost: {money(unitCost)}</div>
+                    <div style={{ fontSize: 12, color: "#6b7280" }}>
+                      Unit Cost: {money(unitCost)} | Paid: {money(rec.paid)} | Balance: <span style={{ color: rec.balance > 0 ? "#dc2626" : "#16a34a", fontWeight: 600 }}>{money(rec.balance)}</span>
+                    </div>
                   </div>
                   {rec.imageUrl && (
                     <img src={rec.imageUrl} alt="" style={{ width: 40, height: 40, objectFit: "cover", borderRadius: 6 }} />

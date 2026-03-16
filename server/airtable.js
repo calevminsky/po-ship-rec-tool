@@ -20,10 +20,18 @@ const SCAN_FIELD = process.env.AIRTABLE_SCAN_FIELD || "Scan_JSON";
 const SHOPIFY_PRODUCT_GID_FIELD = process.env.AIRTABLE_SHOPIFY_PRODUCT_GID_FIELD || "Shopify_Product_GID";
 
 // Tracking Number field
-const TRACKING_NUMBER_FIELD = process.env.AIRTABLE_TRACKING_NUMBER_FIELD || "Tracking_Number";
+const TRACKING_NUMBER_FIELD = process.env.AIRTABLE_TRACKING_NUMBER_FIELD || "Tracking Number";
 
-// Allocation PDF attachment field
+// PDF attachment fields
 const ALLOC_PDF_FIELD = process.env.AIRTABLE_ALLOC_PDF_FIELD || "Alloc_PDF";
+const RECEIVING_PDF_FIELD = process.env.AIRTABLE_RECEIVING_PDF_FIELD || "Receiving PDFs";
+
+// Financial fields
+const PAID_FIELD = process.env.AIRTABLE_PAID_FIELD || "Paid";
+const CREDIT_AMOUNT_FIELD = process.env.AIRTABLE_CREDIT_AMOUNT_FIELD || "Credit Amount";
+const INVOICE_AMOUNT_FIELD = process.env.AIRTABLE_INVOICE_AMOUNT_FIELD || "Invoice Amount";
+const FINAL_COST_FIELD = process.env.AIRTABLE_FINAL_COST_FIELD || "Final Cost";
+const BALANCE_FIELD = process.env.AIRTABLE_BALANCE_FIELD || "Balance";
 
 // Office Samples fields
 const OFFICE_SENT_FIELD = process.env.AIRTABLE_OFFICE_SENT_FIELD || "Office_Sent";
@@ -74,6 +82,11 @@ export async function listRecordsByPO(po) {
   params.append("fields[]", SHOPIFY_PRODUCT_GID_FIELD);
   params.append("fields[]", OFFICE_SENT_FIELD);
   params.append("fields[]", TRACKING_NUMBER_FIELD);
+  params.append("fields[]", PAID_FIELD);
+  params.append("fields[]", CREDIT_AMOUNT_FIELD);
+  params.append("fields[]", INVOICE_AMOUNT_FIELD);
+  params.append("fields[]", FINAL_COST_FIELD);
+  params.append("fields[]", BALANCE_FIELD);
 
   for (const f of LABEL_FIELDS) params.append("fields[]", f);
 
@@ -115,6 +128,11 @@ export async function listRecordsByPO(po) {
         shopifyProductGid: f[SHOPIFY_PRODUCT_GID_FIELD] ?? null,
         officeSent: f[OFFICE_SENT_FIELD] ?? null,
         trackingNumber: f[TRACKING_NUMBER_FIELD] ?? "",
+        paid: Number(f[PAID_FIELD] ?? 0),
+        creditAmount: Number(f[CREDIT_AMOUNT_FIELD] ?? 0),
+        invoiceAmount: Number(f[INVOICE_AMOUNT_FIELD] ?? 0),
+        finalCost: Number(f[FINAL_COST_FIELD] ?? 0),
+        balance: Number(f[BALANCE_FIELD] ?? 0),
         buy,
         ship,
         rec
@@ -172,5 +190,6 @@ export const AIRTABLE_FIELDS = {
   OFFICE_SENT_FIELD,
   OFFICE_SAMPLE_PHOTO_FIELD,
   TRACKING_NUMBER_FIELD,
-  ALLOC_PDF_FIELD
+  ALLOC_PDF_FIELD,
+  RECEIVING_PDF_FIELD
 };
