@@ -219,6 +219,7 @@ export async function listUnpaidRecords() {
         ship[s] = Number(f[`Ship_${s}`] ?? 0);
         rec[s] = Number(f[`Rec_${s}`] ?? 0);
       }
+      const buyUnits = sizes.reduce((sum, s) => sum + buy[s], 0);
       const shipUnits = sizes.reduce((sum, s) => sum + ship[s], 0);
       const recUnits = sizes.reduce((sum, s) => sum + rec[s], 0);
       const vendorRaw = f[VENDOR_FIELD];
@@ -239,7 +240,7 @@ export async function listUnpaidRecords() {
         invoiceAmount: Number(f[INVOICE_AMOUNT_FIELD] ?? 0),
         finalCost: Number(f[FINAL_COST_FIELD] ?? 0),
         balance: Number(f[BALANCE_FIELD] ?? 0),
-        shipUnits, recUnits,
+        buyUnits, shipUnits, recUnits,
         buy, ship, rec
       });
     }
