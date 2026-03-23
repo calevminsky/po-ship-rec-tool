@@ -103,6 +103,18 @@ export async function linkShopifyProduct(recordId, productId) {
   return j;
 }
 
+export async function closeoutSubmit(payload) {
+  const r = await fetch("/api/closeout", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...payload, skipPdf: true })
+  });
+
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || "Closeout failed");
+  return j;
+}
+
 export async function closeoutPdf(payload) {
   const r = await fetch("/api/closeout", {
     method: "POST",

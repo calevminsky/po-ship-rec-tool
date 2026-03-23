@@ -12,6 +12,7 @@ import {
   shopifyByProductId,
   shopifySearchByTitle,
   linkShopifyProduct,
+  closeoutSubmit,
   closeoutPdf,
   allocationPdf,
   submitOfficeSample,
@@ -1307,10 +1308,24 @@ export default function App() {
 
     try {
       setLoading(true);
-      setStatus("Saving scan and submitting closeout…");
-      const recTotals = perSizeTotalsFromMatrix(scan, locations, sizes);
-      await saveScan(selectedId, scan, recTotals);
-      setStatus("Closeout submitted ✅");
+      setStatus("Submitting closeout (saving + Shopify adjust)…");
+
+      const payload = {
+        recordId: selectedId,
+        po: poData?.po || "",
+        productLabel: selected.label,
+        sizes,
+        locations,
+        allocation: alloc,
+        scanned: scan,
+        shopifyProduct: shopifyLinked ? shopifyProduct : null,
+        officeAlreadySent: !!selected.officeSent,
+        buy: selected.buy || {},
+        ship: shipEdits || {}
+      };
+
+      await closeoutSubmit(payload);
+      setStatus("Closeout submitted ✅ Scan saved + Shopify inventory adjusted.");
     } catch (e) {
       setStatus(`Closeout failed: ${e.message}`);
     } finally {
