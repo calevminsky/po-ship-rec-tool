@@ -411,6 +411,11 @@ app.post("/api/closeout", requireAuth, async (req, res) => {
       });
     }
 
+    // If skipPdf, don't send the PDF to the client (it's still uploaded to Airtable above)
+    if (req.body.skipPdf) {
+      return res.json({ ok: true, shopify: shopifyResult });
+    }
+
     res.setHeader("Content-Type", "application/pdf");
     res.setHeader("Content-Disposition", `attachment; filename="closeout_${po || "PO"}_${Date.now()}.pdf"`);
     res.send(pdfBuffer);
