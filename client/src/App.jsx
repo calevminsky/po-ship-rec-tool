@@ -305,6 +305,7 @@ export default function App() {
 
   // Mode: shipping | allocation | receiving
   const [mode, setMode] = useState(null);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const [poInput, setPoInput] = useState("");
   const [poData, setPoData] = useState(null);
@@ -1290,7 +1291,34 @@ export default function App() {
     }
   }
 
-  // ---------- Mode 3: Closeout ----------
+  // ---------- Mode 3: Submit Closeout (no PDF) ----------
+  async function onSaveScanAndSubmit() {
+    if (!selectedId || !selected) return;
+
+    if (!allocMatchesShip) {
+      const ok = window.confirm("Allocation does NOT match Ship Units.\n\nSubmit closeout anyway?");
+      if (!ok) return;
+    }
+
+    if (!scanMatchesAlloc) {
+      const ok = window.confirm("Scanned totals do NOT match Allocation.\n\nSubmit closeout anyway?");
+      if (!ok) return;
+    }
+
+    try {
+      setLoading(true);
+      setStatus("Saving scan and submitting closeout…");
+      const recTotals = perSizeTotalsFromMatrix(scan, locations, sizes);
+      await saveScan(selectedId, scan, recTotals);
+      setStatus("Closeout submitted ✅");
+    } catch (e) {
+      setStatus(`Closeout failed: ${e.message}`);
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  // ---------- Mode 3: Closeout + PDF ----------
   async function onCloseout() {
     if (!selectedId || !selected) return;
 
@@ -1390,33 +1418,42 @@ export default function App() {
 
         {status ? <div className={`banner ${bannerType}`}>{status}</div> : null}
 
-        <div className="layout">
+        <div className={`layout ${sidebarCollapsed ? "sidebarCollapsed" : ""}`}>
           {/* LEFT */}
           <aside className="card lookup">
-            <div className="cardTitle">Workflow</div>
+            {sidebarCollapsed ? (
+              <button className="sidebarToggle" onClick={() => setSidebarCollapsed(false)} title="Expand sidebar">&#9654;</button>
+            ) : (
+              <div className="sidebarToggleExpanded">
+                <div className="cardTitle">Workflow</div>
+                <button className="sidebarToggle" onClick={() => setSidebarCollapsed(true)} title="Collapse sidebar">&#9664;</button>
+              </div>
+            )}
 
             {!mode ? (
               <div className="modePick">
+                <div className="modeCategoryLabel">Core</div>
                 <button className="btn primary modeBtn" onClick={() => setMode("shipping")}>
-                  1) Shipping
+                  Shipping
                 </button>
                 <button className="btn primary modeBtn" onClick={() => setMode("allocation")}>
-                  2) Allocation
+                  Allocation
                 </button>
                 <button className="btn primary modeBtn" onClick={() => setMode("receiving")}>
-                  3) Receiving
-                </button>
-                <button className="btn primary modeBtn" onClick={() => { setMode("office-samples"); resetOsState(); }}>
-                  4) Office Samples
-                </button>
-                <button className="btn primary modeBtn" onClick={() => { setMode("bulk-allocation"); setBaRows([]); setBaLoaded(false); setBaZipReady(false); }}>
-                  5) Bulk Allocation
-                </button>
-                <button className="btn primary modeBtn" onClick={() => { setMode("product-lookup"); setPlProduct(null); setPlLinkedPOs([]); setPlSearchResults([]); setPlBarcode(""); setPlSearch(""); }}>
-                  6) Product Lookup
+                  Receiving
                 </button>
                 <button className="btn primary modeBtn" onClick={() => { setMode("invoicing"); setInvRecords([]); setInvSelected({}); onLoadInvoicing(); }}>
-                  7) Invoicing
+                  Invoicing
+                </button>
+                <div className="modeCategoryLabel">Other</div>
+                <button className="btn primary modeBtn" onClick={() => { setMode("office-samples"); resetOsState(); }}>
+                  Office Samples
+                </button>
+                <button className="btn primary modeBtn" onClick={() => { setMode("bulk-allocation"); setBaRows([]); setBaLoaded(false); setBaZipReady(false); }}>
+                  Bulk Allocation
+                </button>
+                <button className="btn primary modeBtn" onClick={() => { setMode("product-lookup"); setPlProduct(null); setPlLinkedPOs([]); setPlSearchResults([]); setPlBarcode(""); setPlSearch(""); }}>
+                  Product Lookup
                 </button>
                 <div className="hint">After picking a mode, load a PO and select a product.</div>
               </div>
@@ -1718,23 +1755,25 @@ export default function App() {
               </div>
             ) : (
               <>
-                <div className="topRow">
-                  <div className="productInfo">
-                    <div className="productTitle">{selected.label}</div>
-                    <div className="productBadges">
-                      <span className="badge">Unit Cost: {money(unitCost)}</span>
-                      <span className="badge subtle">PO: {poData?.po}</span>
+                {mode !== "receiving" && (
+                  <div className="topRow">
+                    <div className="productInfo">
+                      <div className="productTitle">{selected.label}</div>
+                      <div className="productBadges">
+                        <span className="badge">Unit Cost: {money(unitCost)}</span>
+                        <span className="badge subtle">PO: {poData?.po}</span>
+                      </div>
+                    </div>
+
+                    <div className="imageCard">
+                      {selected.imageUrl ? (
+                        <img className="image" src={selected.imageUrl} alt="Product or Swatch" />
+                      ) : (
+                        <div className="imageEmpty">No image</div>
+                      )}
                     </div>
                   </div>
-
-                  <div className="imageCard">
-                    {selected.imageUrl ? (
-                      <img className="image" src={selected.imageUrl} alt="Product or Swatch" />
-                    ) : (
-                      <div className="imageEmpty">No image</div>
-                    )}
-                  </div>
-                </div>
+                )}
 
                 {mode === "shipping" ? (
                   <>
@@ -1859,40 +1898,34 @@ export default function App() {
 
                 {mode === "receiving" ? (
                   <>
-                    <div className="sectionTitle">Mode 3 — Receiving</div>
-                    <div className="hint">Select a location, then scan. The selected location stays visually obvious.</div>
-
-                    {selected.officeSent ? (
-                      <div className="banner info" style={{ marginBottom: 10 }}>
-                        Office samples sent on {fmtDateForInput(selected.officeSent)} — Office column pre-filled. Shopify Office inventory will NOT be re-adjusted at closeout.
-                      </div>
-                    ) : null}
-
-                    <div className="locBar">
-                      <div className="locTitle">Selected Location</div>
-                      <div className="locButtons">
-                        {locations.map((l) => (
-                          <button
-                            key={l}
-                            type="button"
-                            className={`locBtn ${activeLoc === l ? "active" : ""}`}
-                            onClick={() => {
-                              setActiveLoc(l);
-                              setTimeout(() => scanInputRef.current?.focus(), 25);
-                            }}
-                          >
-                            {l}
-                          </button>
-                        ))}
+                    <div className="receivingProductHeader">
+                      <div className="receivingProductName">{selected.label}</div>
+                      <div className="receivingProductMeta">
+                        <span className="badge subtle">PO: {poData?.po}</span>
+                        {shopifyLinked ? (
+                          <span className="shopifyLinkedBanner">Linked: {shopifyProduct?.title || "Shopify"}</span>
+                        ) : (
+                          <span className="tag warn">Link Shopify to scan</span>
+                        )}
                       </div>
                     </div>
 
-                    <div className="scanCard">
+                    {selected.officeSent ? (
+                      <div className="hint" style={{ marginBottom: 8, color: "var(--ok)" }}>
+                        Office samples sent on {fmtDateForInput(selected.officeSent)} — Office column pre-filled.
+                      </div>
+                    ) : null}
+
+                    <div className="scanCard" style={{ marginTop: 0 }}>
                       <div className="scanHeader">
-                        <div className="scanHeaderTitle">Scan</div>
+                        <div className="scanHeaderTitle">
+                          Scan
+                          <span style={{ marginLeft: 8, fontSize: 13, fontWeight: 700, color: "var(--ok)" }}>
+                            <span className="locActiveIndicator"></span>{activeLoc}
+                          </span>
+                        </div>
                         <div className="scanHeaderMeta">
-                          Active: <span className="tag">{activeLoc}</span>
-                          {!shopifyLinked ? <span className="tag warn">Link Shopify to scan</span> : null}
+                          <span className="hint" style={{ margin: 0 }}>Click a location name in the matrix below to switch</span>
                         </div>
                       </div>
 
@@ -1918,8 +1951,6 @@ export default function App() {
                           {scanEdit ? "Done Editing" : "Edit Counts"}
                         </button>
                       </form>
-
-                      <div className="scanHint">Tip: over-scans prompt for override. Wrong barcode warns.</div>
                     </div>
 
                     <ActiveLocSummary activeLoc={activeLoc} sizes={sizes} alloc={alloc} scan={scan} />
@@ -1930,14 +1961,21 @@ export default function App() {
                       alloc={alloc}
                       scan={scan}
                       activeLoc={activeLoc}
+                      onSelectLoc={(loc) => {
+                        setActiveLoc(loc);
+                        setTimeout(() => scanInputRef.current?.focus(), 25);
+                      }}
                       edit={scanEdit}
                       setScanCell={setScanCell}
                       bumpScanCell={bumpScanCell}
                     />
 
                     <div className="actionsRow">
-                      <button className="btn primary" onClick={onCloseout} disabled={loading || !selectedId} type="button">
-                        Submit Closeout + Download PDF
+                      <button className="btn primary" onClick={onSaveScanAndSubmit} disabled={loading || !selectedId} type="button">
+                        Submit Closeout
+                      </button>
+                      <button className="btn" onClick={onCloseout} disabled={loading || !selectedId} type="button">
+                        Submit + Download PDF
                       </button>
 
                       <div className="actionsNote">
@@ -2103,10 +2141,10 @@ function ActiveLocSummary({ activeLoc, sizes, alloc, scan }) {
   );
 }
 
-function ReceivingMatrixClean({ locations, sizes, alloc, scan, activeLoc, edit, setScanCell, bumpScanCell }) {
+function ReceivingMatrixClean({ locations, sizes, alloc, scan, activeLoc, onSelectLoc, edit, setScanCell, bumpScanCell }) {
   return (
     <div className="tableCard">
-      <table className="matrix2 matrixClean">
+      <table className="matrix2 matrixClean matrixCompact">
         <thead>
           <tr>
             <th className="c-loc">Location</th>
@@ -2115,7 +2153,7 @@ function ReceivingMatrixClean({ locations, sizes, alloc, scan, activeLoc, edit, 
                 {s}
               </th>
             ))}
-            <th className="c-rowtotal">Row Total</th>
+            <th className="c-rowtotal">Total</th>
           </tr>
         </thead>
 
@@ -2126,8 +2164,12 @@ function ReceivingMatrixClean({ locations, sizes, alloc, scan, activeLoc, edit, 
 
             return (
               <tr key={loc} className={isActive ? "activeRow" : ""}>
-                <td className="locCell">
-                  {loc} {isActive ? <span className="miniTag">ACTIVE</span> : null}
+                <td
+                  className="locCellClickable"
+                  onClick={() => onSelectLoc && onSelectLoc(loc)}
+                >
+                  {isActive ? <span className="locActiveIndicator"></span> : null}
+                  {loc}
                 </td>
 
                 {sizes.map((s) => {
