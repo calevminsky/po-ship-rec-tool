@@ -679,9 +679,156 @@ body{
   font-weight: 850;
 }
 
+/* Collapsible sidebar */
+.layout.sidebarCollapsed{
+  grid-template-columns: 40px 1fr;
+}
+.layout.sidebarCollapsed .lookup{
+  padding: 6px 4px;
+  overflow: hidden;
+}
+.layout.sidebarCollapsed .lookup > *:not(.sidebarToggle){
+  display: none;
+}
+
+.sidebarToggle{
+  width: 100%;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  font-size: 18px;
+  font-weight: 900;
+  color: var(--muted);
+  padding: 6px 2px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.sidebarToggle:hover{
+  background: #f1f5f9;
+  color: var(--text);
+}
+
+.sidebarToggleExpanded{
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.sidebarToggleExpanded .sidebarToggle{
+  width: auto;
+  padding: 4px 8px;
+}
+
+/* Clickable location names in matrix */
+.locCellClickable{
+  text-align: left;
+  font-weight: 900;
+  cursor: pointer;
+  user-select: none;
+  padding: 8px 10px !important;
+  border-radius: 8px;
+  transition: background 0.15s;
+}
+.locCellClickable:hover{
+  background: #f1f5f9;
+}
+
+/* Active location row - more obvious highlight */
+.activeRow td{
+  background: #eef2ff !important;
+}
+.activeRow .locCellClickable{
+  background: var(--primary) !important;
+  color: #fff !important;
+  border-radius: 8px;
+}
+.locActiveIndicator{
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: #10b981;
+  margin-right: 6px;
+  animation: pulse 1.5s ease-in-out infinite;
+}
+@keyframes pulse{
+  0%, 100%{ opacity: 1; }
+  50%{ opacity: 0.4; }
+}
+
+/* Shopify linked banner - inline, non-sticky */
+.shopifyLinkedBanner{
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: var(--softOk);
+  border: 1px solid rgba(16,185,129,0.25);
+  font-weight: 800;
+  font-size: 12px;
+  color: #065f46;
+  margin-bottom: 8px;
+}
+
+/* Compact matrix for receiving */
+.matrix2.matrixCompact th,
+.matrix2.matrixCompact td{
+  padding: 6px 8px;
+  font-size: 12px;
+}
+.matrix2.matrixCompact .bigNum{
+  font-size: 15px;
+}
+.matrix2.matrixCompact .smallSub{
+  font-size: 10px;
+}
+
+/* Product name sticky header in receiving */
+.receivingProductHeader{
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--card);
+  padding: 10px 0;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--border);
+}
+.receivingProductName{
+  font-size: 18px;
+  font-weight: 950;
+  letter-spacing: -0.02em;
+}
+.receivingProductMeta{
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-top: 4px;
+  flex-wrap: wrap;
+}
+
+/* Mode category section */
+.modeCategoryLabel{
+  font-size: 11px;
+  font-weight: 800;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-top: 12px;
+  margin-bottom: 6px;
+  padding-left: 2px;
+}
+.modeCategoryLabel:first-child{
+  margin-top: 0;
+}
+
 /* Responsive */
 @media (max-width: 1050px){
   .layout{ grid-template-columns: 1fr; }
+  .layout.sidebarCollapsed{ grid-template-columns: 1fr; }
+  .layout.sidebarCollapsed .lookup > *:not(.sidebarToggle){ display: block; }
   .scanInput{ min-width: 240px; }
   .sizeCards{ grid-template-columns: repeat(3, minmax(0, 1fr)); }
 }
