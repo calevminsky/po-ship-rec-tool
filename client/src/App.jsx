@@ -824,8 +824,8 @@ export default function App() {
     setLastScanStack([]);
     setCloseoutDone(!!selected.hasCloseout);
     setLabelOpen(false);
-    setLabelStyle(selected.labelFields?.Style || "");
-    setLabelColor(selected.labelFields?.Color || "");
+    setLabelStyle(selected.styleName || "");
+    setLabelColor(selected.colorName || "");
 
     setStatus("");
 
