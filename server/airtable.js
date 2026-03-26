@@ -137,7 +137,8 @@ export async function listRecordsByPO(po) {
         finalCost: Number(f[FINAL_COST_FIELD] ?? 0),
         balance: Number(f[BALANCE_FIELD] ?? 0),
         hasCloseout: (() => { try { return !!JSON.parse(f[SCAN_FIELD] || "{}")._closeoutSubmitted; } catch { return false; } })(),
-        labelFields: Object.fromEntries(LABEL_FIELDS.map((lf) => [lf, String(f[lf] ?? "")])),
+        styleName: (() => { const p = String(f[PRODUCT_FIELD] ?? ""); const i = p.lastIndexOf(" ("); return i > 0 ? p.slice(0, i) : p; })(),
+        colorName: (() => { const p = String(f[PRODUCT_FIELD] ?? ""); const m = p.match(/\(([^)]+)\)\s*$/); return m ? m[1] : ""; })(),
         buy,
         ship,
         rec
