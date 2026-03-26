@@ -465,35 +465,31 @@ export function buildBinLabelPdf({ styleName, color }) {
   const printW = WIDTH - 2 * MARGIN;
   const printH = HEIGHT - 2 * MARGIN;
 
-  const doc = new PDFDocument({ size: [WIDTH, HEIGHT], margins: { top: MARGIN, bottom: MARGIN, left: MARGIN, right: MARGIN } });
+  const doc = new PDFDocument({ size: [WIDTH, HEIGHT], margins: { top: 0, bottom: 0, left: 0, right: 0 } });
   const buffers = [];
   doc.on("data", (d) => buffers.push(d));
   const done = new Promise((resolve) => doc.on("end", () => resolve(Buffer.concat(buffers))));
 
   doc.registerFont("NarrowBold", NARROW_BOLD_FONT);
 
-  // Fixed Y positions — divide 158.4pt usable height into 3 bands
-  // Style: 55% (top), Color: 25% (middle), Size run: 20% (bottom)
-  const styleY = MARGIN;
-  const colorY = MARGIN + printH * 0.55;
-  const sizeRunY = MARGIN + printH * 0.80;
-
-  // Style Name — large, bold, narrow, centered
+  // Style Name — flush to top
   const styleText = (styleName || "").toUpperCase();
   const styleFontSize = fitFontSize(doc, styleText, "NarrowBold", 80, 20, printW);
   doc.font("NarrowBold").fontSize(styleFontSize).fillColor("#000000");
-  doc.text(styleText, MARGIN, styleY, { width: printW, align: "center", lineBreak: false });
+  doc.text(styleText, MARGIN, 2, { width: printW, align: "center", lineBreak: false });
 
-  // Color — medium-large, bold, narrow, centered
+  // Size run — anchored to bottom
+  const sizeRunText = "XXS     XS     S     M     L     XL     XXL";
+  doc.font("Helvetica").fontSize(18).fillColor("#000000");
+  const sizeRunY = HEIGHT - 22;
+  doc.text(sizeRunText, MARGIN, sizeRunY, { width: printW, align: "center", lineBreak: false });
+
+  // Color — centered in remaining space between style and size run
   const colorText = (color || "").toUpperCase();
   const colorFontSize = fitFontSize(doc, colorText, "NarrowBold", 40, 16, printW);
   doc.font("NarrowBold").fontSize(colorFontSize).fillColor("#000000");
+  const colorY = (styleFontSize + sizeRunY) / 2 - colorFontSize / 2 + 2;
   doc.text(colorText, MARGIN, colorY, { width: printW, align: "center", lineBreak: false });
-
-  // Size run — smaller, regular, centered at bottom
-  const sizeRunText = "XXS     XS     S     M     L     XL     XXL";
-  doc.font("Helvetica").fontSize(18).fillColor("#000000");
-  doc.text(sizeRunText, MARGIN, sizeRunY, { width: printW, align: "center", lineBreak: false });
 
   doc.end();
   return done;
