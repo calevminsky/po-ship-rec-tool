@@ -21,7 +21,8 @@ import {
   bulkAllocMergedPdf,
   fetchRecordsByShopifyGid,
   fetchInvoicingRecords,
-  markRecordsPaid
+  markRecordsPaid,
+  fetchBinLabelPdf
 } from "./api.js";
 import { computeAllocation } from "./allocationEngine";
 
@@ -342,6 +343,10 @@ export default function App() {
   // Receiving (Mode 3)
   const [scan, setScan] = useState(() => emptyMatrix(DEFAULT_LOCATIONS, SIZES));
   const [scanEdit, setScanEdit] = useState(false);
+  const [closeoutDone, setCloseoutDone] = useState(false);
+  const [labelOpen, setLabelOpen] = useState(false);
+  const [labelStyle, setLabelStyle] = useState("");
+  const [labelColor, setLabelColor] = useState("");
   const [activeLoc, setActiveLoc] = useState(DEFAULT_LOCATIONS[0]);
   const [scanBarcode, setScanBarcode] = useState("");
   const scanInputRef = useRef(null);
@@ -817,6 +822,10 @@ export default function App() {
 
     setScanBarcode("");
     setLastScanStack([]);
+    setCloseoutDone(!!selected.hasCloseout);
+    setLabelOpen(false);
+    setLabelStyle(selected.labelFields?.Style || "");
+    setLabelColor(selected.labelFields?.Color || "");
 
     setStatus("");
 
@@ -1325,6 +1334,7 @@ export default function App() {
       };
 
       await closeoutSubmit(payload);
+      setCloseoutDone(true);
       setStatus("Closeout submitted ✅ Scan saved + Shopify inventory adjusted.");
     } catch (e) {
       setStatus(`Closeout failed: ${e.message}`);
@@ -1376,6 +1386,7 @@ export default function App() {
       a.remove();
       URL.revokeObjectURL(url);
 
+      setCloseoutDone(true);
       setStatus("Closeout complete ✅ PDF downloaded.");
     } catch (e) {
       setStatus(`Closeout failed: ${e.message}`);
@@ -1985,17 +1996,78 @@ export default function App() {
                       bumpScanCell={bumpScanCell}
                     />
 
+                    <div className="labelSection" style={{ marginBottom: 12 }}>
+                      <button
+                        className="btn small"
+                        type="button"
+                        onClick={() => setLabelOpen((v) => !v)}
+                        style={{ fontWeight: 600 }}
+                      >
+                        {labelOpen ? "▾" : "▸"} Bin Label
+                      </button>
+                      {labelOpen && (
+                        <div style={{ display: "flex", gap: 8, alignItems: "flex-end", marginTop: 8, flexWrap: "wrap" }}>
+                          <label style={{ display: "flex", flexDirection: "column", fontSize: 12, fontWeight: 600 }}>
+                            Style
+                            <input
+                              className="input"
+                              value={labelStyle}
+                              onChange={(e) => setLabelStyle(e.target.value)}
+                              style={{ width: 240 }}
+                            />
+                          </label>
+                          <label style={{ display: "flex", flexDirection: "column", fontSize: 12, fontWeight: 600 }}>
+                            Color
+                            <input
+                              className="input"
+                              value={labelColor}
+                              onChange={(e) => setLabelColor(e.target.value)}
+                              style={{ width: 180 }}
+                            />
+                          </label>
+                          <button
+                            className="btn primary"
+                            type="button"
+                            disabled={loading || (!labelStyle.trim() && !labelColor.trim())}
+                            onClick={async () => {
+                              try {
+                                setLoading(true);
+                                const blob = await fetchBinLabelPdf({ styleName: labelStyle.trim(), color: labelColor.trim() });
+                                const url = URL.createObjectURL(blob);
+                                window.open(url, "_blank");
+                              } catch (e) {
+                                setStatus(`Label failed: ${e.message}`);
+                              } finally {
+                                setLoading(false);
+                              }
+                            }}
+                          >
+                            Print Bin Label
+                          </button>
+                        </div>
+                      )}
+                    </div>
+
                     <div className="actionsRow">
-                      <button className="btn primary" onClick={onSaveScanAndSubmit} disabled={loading || !selectedId} type="button">
+                      <button className="btn primary" onClick={onSaveScanAndSubmit} disabled={loading || !selectedId || closeoutDone} type="button">
                         Submit Closeout
                       </button>
-                      <button className="btn" onClick={onCloseout} disabled={loading || !selectedId} type="button">
+                      <button className="btn" onClick={onCloseout} disabled={loading || !selectedId || closeoutDone} type="button">
                         Submit + Download PDF
                       </button>
 
-                      <div className="actionsNote">
-                        You’ll get warnings if Allocation≠Ship or Scan≠Allocation, but you can still submit if needed.
-                      </div>
+                      {closeoutDone ? (
+                        <div className="actionsNote" style={{ color: "var(--warn)" }}>
+                          Closeout already submitted.{" "}
+                          <button className="btn small" type="button" onClick={() => setCloseoutDone(false)}>
+                            Override
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="actionsNote">
+                          You’ll get warnings if Allocation≠Ship or Scan≠Allocation, but you can still submit if needed.
+                        </div>
+                      )}
                     </div>
                   </>
                 ) : null}

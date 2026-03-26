@@ -233,3 +233,22 @@ export async function allocationPdf(payload) {
 
   return await r.blob();
 }
+
+export async function fetchBinLabelPdf({ styleName, color }) {
+  const r = await fetch("/api/bin-label", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ styleName, color })
+  });
+
+  if (!r.ok) {
+    let msg = "Label generation failed";
+    try {
+      const j = await r.json();
+      msg = j.error || msg;
+    } catch {}
+    throw new Error(msg);
+  }
+
+  return await r.blob();
+}

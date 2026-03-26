@@ -14,7 +14,7 @@ import {
   searchProductsByTitle
 } from "./shopify.js";
 
-import { buildCloseoutPdf, buildAllocationPdf, buildOfficeSamplesPdf, buildInvoicingPdf } from "./pdf.js";
+import { buildCloseoutPdf, buildAllocationPdf, buildOfficeSamplesPdf, buildInvoicingPdf, buildBinLabelPdf } from "./pdf.js";
 
 import { buildAuthorizeUrl, exchangeCodeForToken, makeState } from "./shopifyAuth.js";
 import { setShopifyAccessToken, hasShopifyAccessToken, getShopifyAccessToken } from "./shopifyTokenStore.js";
@@ -338,9 +338,10 @@ app.post("/api/closeout", requireAuth, async (req, res) => {
       recTotals[s] = (locations || []).reduce((a, loc) => a + Number(scanned?.[loc]?.[s] ?? 0), 0);
     }
 
-    // Save scan + totals to Airtable
+    // Save scan + totals to Airtable (mark closeout as submitted)
+    const scanWithFlag = { ...scanned, _closeoutSubmitted: true };
     await updateRecord(recordId, {
-      [AIRTABLE_FIELDS.SCAN_FIELD]: JSON.stringify(scanned),
+      [AIRTABLE_FIELDS.SCAN_FIELD]: JSON.stringify(scanWithFlag),
       ...Object.fromEntries(getSizes().map((s) => [`Rec_${s}`, Number(recTotals[s] ?? 0)]))
     });
 
@@ -421,6 +422,22 @@ app.post("/api/closeout", requireAuth, async (req, res) => {
     res.send(pdfBuffer);
   } catch (e) {
     res.status(500).json({ error: e.message || "Closeout error" });
+  }
+});
+
+// ---- Bin Label PDF (Brother QL-810W) ----
+app.post("/api/bin-label", requireAuth, async (req, res) => {
+  try {
+    const { styleName, color } = req.body || {};
+    if (!styleName && !color) return res.status(400).json({ error: "styleName or color required" });
+
+    const pdfBuffer = await buildBinLabelPdf({ styleName: styleName || "", color: color || "" });
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", "inline; filename=\"bin-label.pdf\"");
+    res.send(pdfBuffer);
+  } catch (e) {
+    res.status(500).json({ error: e.message || "Label generation failed" });
   }
 });
 

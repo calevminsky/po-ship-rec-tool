@@ -1,4 +1,6 @@
 import PDFDocument from "pdfkit";
+import path from "path";
+import { fileURLToPath } from "url";
 
 // ── Monochrome palette ───────────────────────────────────────────────────────
 const BANNER_BG  = "#111111";  // near-black banner
@@ -436,6 +438,60 @@ export function buildInvoicingPdf({ records }) {
   doc.font("Helvetica").fontSize(8).fillColor("#999999").text("Approved by", tableX, sigY + 4);
   doc.moveTo(tableX + 300, sigY).lineTo(tableX + 500, sigY).stroke("#999999");
   doc.font("Helvetica").fontSize(8).fillColor("#999999").text("Date", tableX + 300, sigY + 4);
+
+  doc.end();
+  return done;
+}
+
+// ── Bin Label PDF (Brother QL-810W, 13" x 2.4" continuous) ─────────────────
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const NARROW_BOLD_FONT = path.join(__dirname, "fonts", "PTSansNarrow-Bold.woff");
+
+function fitFontSize(doc, text, fontName, maxSize, minSize, maxWidth) {
+  let size = maxSize;
+  while (size > minSize) {
+    doc.font(fontName).fontSize(size);
+    if (doc.widthOfString(text) <= maxWidth) break;
+    size -= 2;
+  }
+  return size;
+}
+
+export function buildBinLabelPdf({ styleName, color }) {
+  const WIDTH = 936;     // 13 inches at 72pt/in
+  const HEIGHT = 172.8;  // 2.4 inches at 72pt/in
+  const MARGIN = 7.2;    // 0.1 inches
+  const printW = WIDTH - 2 * MARGIN;
+
+  const doc = new PDFDocument({ size: [WIDTH, HEIGHT], margin: MARGIN });
+  const buffers = [];
+  doc.on("data", (d) => buffers.push(d));
+  const done = new Promise((resolve) => doc.on("end", () => resolve(Buffer.concat(buffers))));
+
+  doc.registerFont("NarrowBold", NARROW_BOLD_FONT);
+
+  // Style Name — large, bold, narrow, centered
+  const styleText = (styleName || "").toUpperCase();
+  const styleFontSize = fitFontSize(doc, styleText, "NarrowBold", 88, 20, printW);
+  doc.font("NarrowBold").fontSize(styleFontSize).fillColor("#000000");
+  const styleHeight = doc.heightOfString(styleText, { width: printW, align: "center" });
+  const styleY = 10;
+  doc.text(styleText, MARGIN, styleY, { width: printW, align: "center" });
+
+  // Color — medium-large, bold, narrow, centered
+  const colorText = (color || "").toUpperCase();
+  const colorFontSize = fitFontSize(doc, colorText, "NarrowBold", 48, 16, printW);
+  doc.font("NarrowBold").fontSize(colorFontSize).fillColor("#000000");
+  const colorY = styleY + styleHeight + 4;
+  doc.text(colorText, MARGIN, colorY, { width: printW, align: "center" });
+
+  // Size run — smaller, regular, centered near bottom
+  const sizeRunText = "XXS     XS     S     M     L     XL     XXL";
+  doc.font("Helvetica").fontSize(20).fillColor("#000000");
+  const sizeRunHeight = doc.heightOfString(sizeRunText, { width: printW, align: "center" });
+  const sizeRunY = HEIGHT - MARGIN - sizeRunHeight - 2;
+  doc.text(sizeRunText, MARGIN, sizeRunY, { width: printW, align: "center" });
 
   doc.end();
   return done;
