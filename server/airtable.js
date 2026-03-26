@@ -136,6 +136,8 @@ export async function listRecordsByPO(po) {
         invoiceAmount: Number(f[INVOICE_AMOUNT_FIELD] ?? 0),
         finalCost: Number(f[FINAL_COST_FIELD] ?? 0),
         balance: Number(f[BALANCE_FIELD] ?? 0),
+        hasCloseout: (() => { try { return !!JSON.parse(f[SCAN_FIELD] || "{}")._closeoutSubmitted; } catch { return false; } })(),
+        labelFields: Object.fromEntries(LABEL_FIELDS.map((lf) => [lf, String(f[lf] ?? "")])),
         buy,
         ship,
         rec
