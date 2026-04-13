@@ -25,6 +25,13 @@ import {
   fetchBinLabelPdf
 } from "./api.js";
 import { computeAllocation } from "./allocationEngine";
+import {
+  computeVariance,
+  aggregateVariance,
+  makeDiscrepancyPredicate,
+  formatDiff,
+  VARIANCE_BUCKETS,
+} from "./varianceEngine";
 
 // ---- Dynamsoft barcode scanner (Office Samples mode) ----
 const DYNAMSOFT_LICENSE = "DLS2eyJoYW5kc2hha2VDb2RlIjoiMTA0MzEyNTE0LTEwNDQ2Nzg3NCIsIm1haW5TZXJ2ZXJVUkwiOiJodHRwczovL21kbHMuZHluYW1zb2Z0b25saW5lLmNvbS8iLCJvcmdhbml6YXRpb25JRCI6IjEwNDMxMjUxNCIsInN0YW5kYnlTZXJ2ZXJVUkwiOiJodHRwczovL3NkbHMuZHluYW1zb2Z0b25saW5lLmNvbS8iLCJjaGVja0NvZGUiOjE5MzI1NzIzNDd9";
@@ -1508,7 +1515,7 @@ export default function App() {
                   <button className="btn" onClick={() => { setMode(null); setInvRecords([]); setInvSelected({}); }}>Change</button>
                 </div>
                 <div className="divider" />
-                <div className="hint">Showing all unpaid POs. Select records and mark as paid.</div>
+                <div className="hint">Showing all unpaid POs. Select records and mark as paid. Switch to Variance Report to see overage/shortage trends.</div>
                 <button className="btn" onClick={onLoadInvoicing} disabled={invLoading} style={{ width: "100%", marginTop: 6 }}>
                   {invLoading ? "Loading…" : "Refresh"}
                 </button>
@@ -2298,28 +2305,129 @@ function ReceivingMatrixClean({ locations, sizes, alloc, scan, activeLoc, onSele
 
 /* ---------------- Invoicing Panel ---------------- */
 
+// Compact multi-select dropdown with checkbox list. Used for PO + Vendor filters.
+function MultiSelect({ options, selected, onChange, label, width = 160, searchable = true }) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    function onDoc(e) { if (ref.current && !ref.current.contains(e.target)) setOpen(false); }
+    document.addEventListener("mousedown", onDoc);
+    return () => document.removeEventListener("mousedown", onDoc);
+  }, [open]);
+
+  const filteredOpts = !query ? options : options.filter((o) => String(o).toLowerCase().includes(query.toLowerCase()));
+  const display = selected.size === 0
+    ? `All ${label}`
+    : selected.size === 1
+      ? String([...selected][0])
+      : `${selected.size} ${label} selected`;
+
+  function toggle(opt) {
+    const next = new Set(selected);
+    if (next.has(opt)) next.delete(opt); else next.add(opt);
+    onChange(next);
+  }
+
+  return (
+    <div ref={ref} style={{ position: "relative", width }}>
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        style={{
+          width: "100%", padding: "4px 8px", fontSize: 11, border: "1px solid #d1d5db",
+          borderRadius: 4, background: "white", textAlign: "left", cursor: "pointer",
+          display: "flex", justifyContent: "space-between", alignItems: "center",
+          color: selected.size ? "#111827" : "#6b7280"
+        }}
+      >
+        <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{display}</span>
+        <span style={{ marginLeft: 6, color: "#9ca3af" }}>{open ? "\u25B2" : "\u25BC"}</span>
+      </button>
+      {open && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 2px)", left: 0, zIndex: 50,
+          minWidth: "100%", maxWidth: 280, maxHeight: 280, overflow: "auto",
+          background: "white", border: "1px solid #d1d5db", borderRadius: 4,
+          boxShadow: "0 4px 12px rgba(0,0,0,0.08)", padding: 4
+        }}>
+          {searchable && options.length > 8 && (
+            <input
+              type="text"
+              placeholder={`Search ${label}…`}
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              style={{ width: "100%", padding: "4px 6px", fontSize: 11, border: "1px solid #e5e7eb", borderRadius: 3, marginBottom: 4 }}
+              autoFocus
+            />
+          )}
+          {selected.size > 0 && (
+            <button
+              className="linkBtn"
+              type="button"
+              onClick={() => onChange(new Set())}
+              style={{ fontSize: 11, padding: "2px 6px", marginBottom: 4 }}
+            >
+              Clear
+            </button>
+          )}
+          {filteredOpts.length === 0 && (
+            <div style={{ padding: "6px 8px", fontSize: 11, color: "#9ca3af" }}>No matches</div>
+          )}
+          {filteredOpts.map((opt) => (
+            <label key={opt} style={{
+              display: "flex", alignItems: "center", gap: 6, padding: "3px 6px",
+              cursor: "pointer", fontSize: 12, borderRadius: 3
+            }}
+              onMouseEnter={(e) => e.currentTarget.style.background = "#f3f4f6"}
+              onMouseLeave={(e) => e.currentTarget.style.background = ""}
+            >
+              <input
+                type="checkbox"
+                checked={selected.has(opt)}
+                onChange={() => toggle(opt)}
+                style={{ width: 13, height: 13 }}
+              />
+              <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{opt}</span>
+            </label>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllPo, onDeselectAllPo, loading }) {
+  const [view, setView] = useState("records"); // "records" | "variance"
   const [expanded, setExpanded] = useState({});
   const [sortCol, setSortCol] = useState(null);
   const [sortDir, setSortDir] = useState("asc");
-  const [filterVendor, setFilterVendor] = useState("");
-  const [filterPo, setFilterPo] = useState("");
+  const [filterVendors, setFilterVendors] = useState(new Set());
+  const [filterPos, setFilterPos] = useState(new Set());
   const [filterProduct, setFilterProduct] = useState("");
-  const [hidePaid, setHidePaid] = useState(true);
+  const [filterDateFrom, setFilterDateFrom] = useState("");
+  const [filterDateTo, setFilterDateTo] = useState("");
+  const [filterDiscrepancy, setFilterDiscrepancy] = useState("all");
+  const [filterBalance, setFilterBalance] = useState("owed");
   const [pdfLoading, setPdfLoading] = useState(false);
+  // Variance-report table sort state (independent from records sort)
+  const [poSortCol, setPoSortCol] = useState("absMaxPct");
+  const [poSortDir, setPoSortDir] = useState("desc");
+  const [sizeSortCol, setSizeSortCol] = useState(null);
+  const [sizeSortDir, setSizeSortDir] = useState("asc");
 
-  function toggleExpand(id) {
-    setExpanded((prev) => ({ ...prev, [id]: !prev[id] }));
-  }
+  function toggleExpand(id) { setExpanded((prev) => ({ ...prev, [id]: !prev[id] })); }
 
-  function handleSort(col) {
-    if (sortCol === col) {
-      setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    } else {
-      setSortCol(col);
-      setSortDir("asc");
-    }
+  function makeSortHandler(col, dir, setCol, setDir) {
+    return (c) => {
+      if (col === c) setDir((d) => (d === "asc" ? "desc" : "asc"));
+      else { setCol(c); setDir("asc"); }
+    };
   }
+  const handleSort = makeSortHandler(sortCol, sortDir, setSortCol, setSortDir);
+  const handlePoSort = makeSortHandler(poSortCol, poSortDir, setPoSortCol, setPoSortDir);
+  const handleSizeSort = makeSortHandler(sizeSortCol, sizeSortDir, setSizeSortCol, setSizeSortDir);
 
   if (loading && !records.length) {
     return (
@@ -2342,14 +2450,29 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
   const vendorOptions = [...new Set(records.map((r) => r.vendor).filter(Boolean))].sort();
   const poOptions = [...new Set(records.map((r) => r.po).filter(Boolean))].sort();
 
-  // Filter
-  let filtered = records;
-  if (hidePaid) filtered = filtered.filter((r) => Number(r.balance) > 0);
-  if (filterVendor) filtered = filtered.filter((r) => r.vendor === filterVendor);
-  if (filterPo) filtered = filtered.filter((r) => r.po === filterPo);
-  if (filterProduct) filtered = filtered.filter((r) => r.label.toLowerCase().includes(filterProduct.toLowerCase()));
+  // Shared filter (applies in both Records and Variance views)
+  const discrepancyPred = makeDiscrepancyPredicate(filterDiscrepancy, sizes);
+  const applyFilters = (rec) => {
+    if (filterVendors.size && !filterVendors.has(rec.vendor)) return false;
+    if (filterPos.size && !filterPos.has(rec.po)) return false;
+    if (filterProduct && !String(rec.label || "").toLowerCase().includes(filterProduct.toLowerCase())) return false;
+    if (filterDateFrom && (!rec.delivery || rec.delivery < filterDateFrom)) return false;
+    if (filterDateTo && (!rec.delivery || rec.delivery > filterDateTo)) return false;
+    return discrepancyPred(rec);
+  };
+  const applyBalanceFilter = (rec) => {
+    if (filterBalance === "all") return true;
+    const bal = Number(rec.balance ?? 0);
+    if (filterBalance === "owed") return bal > 0;
+    if (filterBalance === "paid") return bal === 0;
+    if (filterBalance === "overpaid") return bal < 0;
+    return true;
+  };
 
-  // Sort
+  const filteredBase = records.filter(applyFilters);
+  let filtered = filteredBase.filter(applyBalanceFilter);
+
+  // Sort records list
   if (sortCol) {
     const getter = {
       product: (r) => (r.label || "").toLowerCase(),
@@ -2359,6 +2482,9 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
       ship: (r) => r.shipUnits ?? 0,
       rec: (r) => r.recUnits ?? 0,
       recDate: (r) => r.delivery || "",
+      shipDiff: (r) => computeVariance(r, sizes).totals.shipDiff,
+      recDiff: (r) => computeVariance(r, sizes).totals.recDiff,
+      absMaxPct: (r) => computeVariance(r, sizes).totals.absMaxPct ?? -1,
       invoice: (r) => r.invoiceAmount ?? 0,
       credits: (r) => (Number(r.shortageAdjustment ?? 0) + Number(r.creditAmount ?? 0)),
       paid: (r) => r.paid ?? 0,
@@ -2372,6 +2498,9 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
       });
     }
   }
+
+  // Variance aggregation (uses filtered set without balance filter, so variance view reflects full PO state)
+  const agg = aggregateVariance(filteredBase, sizes);
 
   // Compute totals for selected records
   let grandInvoice = 0, grandShortage = 0, grandCredit = 0, grandPaid = 0, grandBalance = 0;
@@ -2390,18 +2519,65 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
 
   const hasSelection = selectedCount > 0;
   const arrow = (col) => sortCol === col ? (sortDir === "asc" ? " \u25B2" : " \u25BC") : "";
+  const poArrow = (col) => poSortCol === col ? (poSortDir === "asc" ? " \u25B2" : " \u25BC") : "";
+  const sizeArrow = (col) => sizeSortCol === col ? (sizeSortDir === "asc" ? " \u25B2" : " \u25BC") : "";
 
   const thStyle = { padding: "6px 8px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "#6b7280", borderBottom: "2px solid #e5e7eb", whiteSpace: "nowrap", background: "#f9fafb", cursor: "pointer", userSelect: "none" };
   const tdStyle = { padding: "5px 8px", fontSize: 12, borderBottom: "1px solid #f3f4f6", whiteSpace: "nowrap" };
   const numTd = { ...tdStyle, textAlign: "right", fontVariantNumeric: "tabular-nums" };
-  const filterInput = { padding: "4px 6px", fontSize: 11, border: "1px solid #d1d5db", borderRadius: 4, width: "100%" };
+  const filterInput = { padding: "4px 6px", fontSize: 11, border: "1px solid #d1d5db", borderRadius: 4 };
+
+  const diffColor = (d) => (d > 0 ? "#16a34a" : d < 0 ? "#dc2626" : "#9ca3af");
+  const diffBg = (d) => (d > 0 ? "#ecfdf5" : d < 0 ? "#fef2f2" : undefined);
+  const fmtPct = (p) => p == null ? "—" : `${p >= 0 ? "+" : ""}${p.toFixed(1)}%`;
+
+  function varianceTd(diff, dollars, { compact = false } = {}) {
+    return (
+      <td style={{ ...numTd, background: diffBg(diff), color: diffColor(diff) }}>
+        <div style={{ fontWeight: 600 }}>{formatDiff(diff)}</div>
+        {!compact && <div style={{ fontSize: 10, opacity: 0.85 }}>{dollars ? money(dollars) : ""}</div>}
+      </td>
+    );
+  }
+
+  const hasActiveFilters =
+    filterVendors.size || filterPos.size || filterProduct || filterDateFrom || filterDateTo ||
+    filterDiscrepancy !== "all" || (view === "records" && filterBalance !== "owed");
+
+  function clearAllFilters() {
+    setFilterVendors(new Set()); setFilterPos(new Set());
+    setFilterProduct(""); setFilterDateFrom(""); setFilterDateTo("");
+    setFilterDiscrepancy("all");
+    if (view === "records") setFilterBalance("owed");
+  }
+
+  function drillToPo(po) { setFilterPos(new Set([po])); setView("records"); }
+  function drillToBucket(bucket) { setFilterDiscrepancy(bucket); setView("records"); }
 
   return (
     <div>
-      <div className="sectionTitle">Mode 7 — Invoicing</div>
-      <div className="hint">{filtered.length} of {records.length} record(s). Click a row to expand per-size breakdown.</div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", marginBottom: 4 }}>
+        <div className="sectionTitle" style={{ marginBottom: 0 }}>Mode 7 — Invoicing</div>
+        <div style={{ display: "inline-flex", border: "1px solid #d1d5db", borderRadius: 6, overflow: "hidden" }}>
+          <button
+            type="button"
+            onClick={() => setView("records")}
+            style={{ padding: "4px 10px", fontSize: 12, border: "none", cursor: "pointer", background: view === "records" ? "#111827" : "white", color: view === "records" ? "white" : "#111827" }}
+          >Records</button>
+          <button
+            type="button"
+            onClick={() => setView("variance")}
+            style={{ padding: "4px 10px", fontSize: 12, border: "none", cursor: "pointer", background: view === "variance" ? "#111827" : "white", color: view === "variance" ? "white" : "#111827" }}
+          >Variance Report</button>
+        </div>
+      </div>
+      {view === "records" ? (
+        <div className="hint">{filtered.length} of {records.length} record(s). Click a row to expand per-size breakdown.</div>
+      ) : (
+        <div className="hint">{filteredBase.length} of {records.length} record(s). Overage/shortage breakdown across filtered POs.</div>
+      )}
 
-      {/* Filters */}
+      {/* Filters (shared between views) */}
       <div style={{ display: "flex", gap: 8, marginTop: 8, marginBottom: 8, flexWrap: "wrap", alignItems: "center", fontSize: 12 }}>
         <input
           type="text"
@@ -2410,23 +2586,41 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
           onChange={(e) => setFilterProduct(e.target.value)}
           style={{ ...filterInput, width: 180 }}
         />
-        <select value={filterPo} onChange={(e) => setFilterPo(e.target.value)} style={filterInput}>
-          <option value="">All POs</option>
-          {poOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+        <MultiSelect options={poOptions} selected={filterPos} onChange={setFilterPos} label="POs" width={140} />
+        <MultiSelect options={vendorOptions} selected={filterVendors} onChange={setFilterVendors} label="Vendors" width={150} />
+        <span style={{ fontSize: 11, color: "#6b7280" }}>Rec Date</span>
+        <input type="date" value={filterDateFrom} onChange={(e) => setFilterDateFrom(e.target.value)} style={filterInput} />
+        <span style={{ fontSize: 11, color: "#9ca3af" }}>→</span>
+        <input type="date" value={filterDateTo} onChange={(e) => setFilterDateTo(e.target.value)} style={filterInput} />
+        <select value={filterDiscrepancy} onChange={(e) => setFilterDiscrepancy(e.target.value)} style={filterInput}>
+          <option value="all">All discrepancies</option>
+          <option value="any">Has discrepancy</option>
+          <option value="exact">Exact match</option>
+          <option value="overage">Overages only</option>
+          <option value="shortage">Shortages only</option>
+          <option value="gt5">&gt; 5%</option>
+          <option value="gt10">&gt; 10%</option>
+          <option value="gt20">&gt; 20%</option>
+          <option value="0-5%">Bucket: 0–5%</option>
+          <option value="5-10%">Bucket: 5–10%</option>
+          <option value="10-20%">Bucket: 10–20%</option>
+          <option value="20-30%">Bucket: 20–30%</option>
+          <option value="30%+">Bucket: 30%+</option>
         </select>
-        <select value={filterVendor} onChange={(e) => setFilterVendor(e.target.value)} style={filterInput}>
-          <option value="">All Vendors</option>
-          {vendorOptions.map((v) => <option key={v} value={v}>{v}</option>)}
-        </select>
-        <label style={{ display: "flex", alignItems: "center", gap: 4, cursor: "pointer", fontSize: 11, color: "#6b7280" }}>
-          <input type="checkbox" checked={hidePaid} onChange={(e) => setHidePaid(e.target.checked)} style={{ width: 13, height: 13 }} />
-          Hide paid
-        </label>
-        {(filterProduct || filterPo || filterVendor) && (
-          <button className="linkBtn" style={{ fontSize: 11 }} onClick={() => { setFilterProduct(""); setFilterPo(""); setFilterVendor(""); }}>Clear filters</button>
+        {view === "records" && (
+          <select value={filterBalance} onChange={(e) => setFilterBalance(e.target.value)} style={filterInput}>
+            <option value="owed">Owed balance</option>
+            <option value="paid">Paid</option>
+            <option value="overpaid">Overpaid</option>
+            <option value="all">All balances</option>
+          </select>
+        )}
+        {hasActiveFilters && (
+          <button className="linkBtn" style={{ fontSize: 11 }} onClick={clearAllFilters}>Clear filters</button>
         )}
       </div>
 
+      {view === "records" && <>
       {hasSelection && (
         <div style={{ marginBottom: 8, position: "sticky", top: 0, zIndex: 10, background: "white", borderBottom: "2px solid #2563eb", padding: "8px 12px", borderRadius: 8, display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap", fontSize: 13 }}>
           <span style={{ fontWeight: 600 }}>{selectedCount} selected</span>
@@ -2496,6 +2690,8 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
               <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSort("buy")}>Buy{arrow("buy")}</th>
               <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSort("ship")}>Ship{arrow("ship")}</th>
               <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSort("rec")}>Rec{arrow("rec")}</th>
+              <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSort("shipDiff")} title="Shipped − Bought (overage if +, shortage if −)">Ship vs Buy{arrow("shipDiff")}</th>
+              <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSort("recDiff")} title="Received − Bought">Rec vs Buy{arrow("recDiff")}</th>
               <th style={thStyle} onClick={() => handleSort("recDate")}>Rec Date{arrow("recDate")}</th>
               <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSort("invoice")}>Invoice{arrow("invoice")}</th>
               <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSort("credits")}>Credits{arrow("credits")}</th>
@@ -2510,6 +2706,7 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
               const credits = Number(rec.shortageAdjustment ?? 0) + Number(rec.creditAmount ?? 0);
               const unitCost = Number(rec.unitCost ?? 0);
               const rowBg = isSelected ? "#eff6ff" : undefined;
+              const recVariance = computeVariance(rec, sizes).totals;
 
               return (
                 <Fragment key={rec.id}>
@@ -2532,6 +2729,8 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
                     <td style={numTd}>{rec.buyUnits ?? 0}</td>
                     <td style={numTd}>{rec.shipUnits ?? 0}</td>
                     <td style={numTd}>{rec.recUnits ?? 0}</td>
+                    {varianceTd(recVariance.shipDiff, recVariance.shipDiffDollars)}
+                    {varianceTd(recVariance.recDiff, recVariance.recDiffDollars)}
                     <td style={{ ...tdStyle, fontSize: 11, color: "#6b7280" }}>{rec.delivery || ""}</td>
                     <td style={numTd}>{money(rec.invoiceAmount)}</td>
                     <td style={numTd}>{credits ? money(credits) : ""}</td>
@@ -2546,9 +2745,14 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
                     const shipTotal = shipRow.reduce((a, b) => a + b, 0);
                     const recTotal = recRow.reduce((a, b) => a + b, 0);
 
+                    const shipDiffRow = sizes.map((_, i) => shipRow[i] - buyRow[i]);
+                    const recDiffRow = sizes.map((_, i) => recRow[i] - buyRow[i]);
+                    const shipDiffTotal = shipTotal - buyTotal;
+                    const recDiffTotal = recTotal - buyTotal;
+                    const diffCellStyle = (v) => ({ padding: "2px 8px", textAlign: "right", fontWeight: 500, color: diffColor(v), background: diffBg(v) });
                     return (
                       <tr>
-                        <td colSpan={12} style={{ padding: 0 }}>
+                        <td colSpan={14} style={{ padding: 0 }}>
                           <div style={{ padding: "8px 12px 8px 36px", background: "#f9fafb", borderBottom: "1px solid #e5e7eb" }}>
                             <table style={{ borderCollapse: "collapse", fontSize: 11, width: "auto" }}>
                               <thead>
@@ -2580,6 +2784,18 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
                                   <td style={{ padding: "2px 8px", textAlign: "right", fontWeight: 600 }}>{recTotal}</td>
                                   <td style={{ padding: "2px 8px", textAlign: "right", fontWeight: 600 }}>{money(recTotal * unitCost)}</td>
                                 </tr>
+                                <tr style={{ borderTop: "1px dashed #e5e7eb" }}>
+                                  <td style={{ padding: "2px 8px", color: "#6b7280" }}>Ship − Buy</td>
+                                  {shipDiffRow.map((v, i) => <td key={sizes[i]} style={diffCellStyle(v)}>{v === 0 ? "" : formatDiff(v)}</td>)}
+                                  <td style={{ ...diffCellStyle(shipDiffTotal), fontWeight: 600 }}>{formatDiff(shipDiffTotal)}</td>
+                                  <td style={{ ...diffCellStyle(shipDiffTotal), fontWeight: 600 }}>{money(shipDiffTotal * unitCost)}</td>
+                                </tr>
+                                <tr>
+                                  <td style={{ padding: "2px 8px", color: "#6b7280" }}>Rec − Buy</td>
+                                  {recDiffRow.map((v, i) => <td key={sizes[i]} style={diffCellStyle(v)}>{v === 0 ? "" : formatDiff(v)}</td>)}
+                                  <td style={{ ...diffCellStyle(recDiffTotal), fontWeight: 600 }}>{formatDiff(recDiffTotal)}</td>
+                                  <td style={{ ...diffCellStyle(recDiffTotal), fontWeight: 600 }}>{money(recDiffTotal * unitCost)}</td>
+                                </tr>
                               </tbody>
                             </table>
                           </div>
@@ -2588,6 +2804,228 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
                     );
                   })()}
                 </Fragment>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      </>}
+
+      {view === "variance" && (
+        <VarianceReportBody
+          agg={agg}
+          sizes={sizes}
+          thStyle={thStyle}
+          tdStyle={tdStyle}
+          numTd={numTd}
+          poArrow={poArrow}
+          sizeArrow={sizeArrow}
+          poSortCol={poSortCol}
+          poSortDir={poSortDir}
+          sizeSortCol={sizeSortCol}
+          sizeSortDir={sizeSortDir}
+          handlePoSort={handlePoSort}
+          handleSizeSort={handleSizeSort}
+          drillToPo={drillToPo}
+          drillToBucket={drillToBucket}
+          varianceTd={varianceTd}
+          diffColor={diffColor}
+          diffBg={diffBg}
+          fmtPct={fmtPct}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ---------------- Variance Report Body ---------------- */
+
+function VarianceReportBody({
+  agg, sizes, thStyle, tdStyle, numTd,
+  poArrow, sizeArrow, poSortCol, poSortDir, sizeSortCol, sizeSortDir,
+  handlePoSort, handleSizeSort, drillToPo, drillToBucket,
+  varianceTd, diffColor, diffBg, fmtPct
+}) {
+  // Sort byPo
+  const poRows = (() => {
+    if (!poSortCol) return agg.byPo;
+    const getter = {
+      po: (r) => r.po || "",
+      vendor: (r) => (r.vendor || "").toLowerCase(),
+      productCount: (r) => r.productCount,
+      buy: (r) => r.buy, ship: (r) => r.ship, rec: (r) => r.rec,
+      shipDiff: (r) => r.shipDiff, recDiff: (r) => r.recDiff,
+      shipDiffDollars: (r) => r.shipDiffDollars, recDiffDollars: (r) => r.recDiffDollars,
+      absMaxPct: (r) => r.absMaxPct ?? -1,
+      bucket: (r) => r.bucket || "",
+    }[poSortCol];
+    if (!getter) return agg.byPo;
+    return [...agg.byPo].sort((a, b) => {
+      const va = getter(a), vb = getter(b);
+      const cmp = typeof va === "number" ? va - vb : String(va).localeCompare(String(vb));
+      return poSortDir === "asc" ? cmp : -cmp;
+    });
+  })();
+
+  // Sort bySize
+  const sizeRows = (() => {
+    if (!sizeSortCol) return agg.bySize;
+    const getter = {
+      size: (r) => sizes.indexOf(r.size),
+      buy: (r) => r.buy, ship: (r) => r.ship, rec: (r) => r.rec,
+      shipDiff: (r) => r.shipDiff, recDiff: (r) => r.recDiff,
+      shipDiffDollars: (r) => r.shipDiffDollars, recDiffDollars: (r) => r.recDiffDollars,
+      avgAbsShipPct: (r) => r.avgAbsShipPct ?? -1,
+      avgAbsRecPct: (r) => r.avgAbsRecPct ?? -1,
+    }[sizeSortCol];
+    if (!getter) return agg.bySize;
+    return [...agg.bySize].sort((a, b) => {
+      const va = getter(a), vb = getter(b);
+      const cmp = typeof va === "number" ? va - vb : String(va).localeCompare(String(vb));
+      return sizeSortDir === "asc" ? cmp : -cmp;
+    });
+  })();
+
+  const cardStyle = { flex: "1 1 180px", border: "1px solid #e5e7eb", borderRadius: 8, padding: "10px 12px", background: "white", minWidth: 170 };
+  const cardLabel = { fontSize: 11, color: "#6b7280", fontWeight: 600, textTransform: "uppercase", letterSpacing: 0.5 };
+  const cardValue = { fontSize: 18, fontWeight: 700, color: "#111827", marginTop: 4 };
+  const cardSub = { fontSize: 11, color: "#6b7280", marginTop: 2 };
+
+  if (agg.recordCount === 0) {
+    return (
+      <div className="emptyState">
+        <div className="emptyTitle">No records match your filters</div>
+        <div className="emptyText">Loosen the filters to see variance data.</div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {/* Stat cards */}
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 14 }}>
+        <div style={cardStyle}>
+          <div style={cardLabel}>Total Overage $</div>
+          <div style={{ ...cardValue, color: "#16a34a" }}>{money(agg.shipOverageDollars)}</div>
+          <div style={cardSub}>Ship basis · +{agg.shipOverageUnits} units</div>
+          <div style={{ ...cardSub, color: "#16a34a" }}>{money(agg.recOverageDollars)} rec · +{agg.recOverageUnits} u</div>
+        </div>
+        <div style={cardStyle}>
+          <div style={cardLabel}>Total Shortage $</div>
+          <div style={{ ...cardValue, color: "#dc2626" }}>{money(agg.shipShortageDollars)}</div>
+          <div style={cardSub}>Ship basis · −{agg.shipShortageUnits} units</div>
+          <div style={{ ...cardSub, color: "#dc2626" }}>{money(agg.recShortageDollars)} rec · −{agg.recShortageUnits} u</div>
+        </div>
+        <div style={cardStyle}>
+          <div style={cardLabel}>Net Variance $</div>
+          <div style={{ ...cardValue, color: diffColor(agg.netShipVarianceDollars) }}>{money(agg.netShipVarianceDollars)}</div>
+          <div style={cardSub}>Ship basis</div>
+          <div style={{ ...cardSub, color: diffColor(agg.netRecVarianceDollars) }}>{money(agg.netRecVarianceDollars)} rec basis</div>
+        </div>
+        <div style={cardStyle}>
+          <div style={cardLabel}>Records with Discrepancy</div>
+          <div style={cardValue}>{agg.discrepantRecordCount} / {agg.recordCount}</div>
+          <div style={cardSub}>{agg.cleanRecordCount} exact match</div>
+        </div>
+        <div style={cardStyle}>
+          <div style={cardLabel}>Avg |Variance| %</div>
+          <div style={cardValue}>{agg.avgAbsShipPct == null ? "—" : agg.avgAbsShipPct.toFixed(1) + "%"}</div>
+          <div style={cardSub}>ship basis</div>
+          <div style={cardSub}>{agg.avgAbsRecPct == null ? "—" : agg.avgAbsRecPct.toFixed(1) + "%"} rec basis</div>
+        </div>
+      </div>
+
+      {/* By PO */}
+      <div style={{ fontSize: 13, fontWeight: 600, color: "#111827", margin: "8px 0 4px" }}>By PO ({poRows.length})</div>
+      <div style={{ overflowX: "auto", marginBottom: 16 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr>
+              <th style={thStyle} onClick={() => handlePoSort("po")}>PO{poArrow("po")}</th>
+              <th style={thStyle} onClick={() => handlePoSort("vendor")}>Vendor{poArrow("vendor")}</th>
+              <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handlePoSort("productCount")}># Products{poArrow("productCount")}</th>
+              <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handlePoSort("buy")}>Buy{poArrow("buy")}</th>
+              <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handlePoSort("ship")}>Ship{poArrow("ship")}</th>
+              <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handlePoSort("rec")}>Rec{poArrow("rec")}</th>
+              <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handlePoSort("shipDiff")}>Ship vs Buy{poArrow("shipDiff")}</th>
+              <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handlePoSort("recDiff")}>Rec vs Buy{poArrow("recDiff")}</th>
+              <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handlePoSort("absMaxPct")}>Max % Var{poArrow("absMaxPct")}</th>
+              <th style={thStyle} onClick={() => handlePoSort("bucket")}>Bucket{poArrow("bucket")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {poRows.map((r) => (
+              <tr key={r.po} style={{ cursor: "pointer" }} onClick={() => drillToPo(r.po)}>
+                <td style={{ ...tdStyle, fontWeight: 500 }}>{r.po}</td>
+                <td style={{ ...tdStyle, color: "#6b7280" }}>{r.vendor || ""}</td>
+                <td style={numTd}>{r.productCount}</td>
+                <td style={numTd}>{r.buy}</td>
+                <td style={numTd}>{r.ship}</td>
+                <td style={numTd}>{r.rec}</td>
+                {varianceTd(r.shipDiff, r.shipDiffDollars)}
+                {varianceTd(r.recDiff, r.recDiffDollars)}
+                <td style={{ ...numTd, fontWeight: 600 }}>{r.absMaxPct == null ? "—" : r.absMaxPct.toFixed(1) + "%"}</td>
+                <td style={tdStyle}>{r.bucket}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* By Size */}
+      <div style={{ fontSize: 13, fontWeight: 600, color: "#111827", margin: "8px 0 4px" }}>By Size</div>
+      <div style={{ overflowX: "auto", marginBottom: 16 }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr>
+              <th style={thStyle} onClick={() => handleSizeSort("size")}>Size{sizeArrow("size")}</th>
+              <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSizeSort("buy")}>Buy{sizeArrow("buy")}</th>
+              <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSizeSort("ship")}>Ship{sizeArrow("ship")}</th>
+              <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSizeSort("rec")}>Rec{sizeArrow("rec")}</th>
+              <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSizeSort("shipDiff")}>Ship vs Buy{sizeArrow("shipDiff")}</th>
+              <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSizeSort("recDiff")}>Rec vs Buy{sizeArrow("recDiff")}</th>
+              <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSizeSort("avgAbsShipPct")}>Avg |Ship %|{sizeArrow("avgAbsShipPct")}</th>
+              <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSizeSort("avgAbsRecPct")}>Avg |Rec %|{sizeArrow("avgAbsRecPct")}</th>
+            </tr>
+          </thead>
+          <tbody>
+            {sizeRows.map((r) => (
+              <tr key={r.size}>
+                <td style={{ ...tdStyle, fontWeight: 500 }}>{r.size}</td>
+                <td style={numTd}>{r.buy}</td>
+                <td style={numTd}>{r.ship}</td>
+                <td style={numTd}>{r.rec}</td>
+                {varianceTd(r.shipDiff, r.shipDiffDollars)}
+                {varianceTd(r.recDiff, r.recDiffDollars)}
+                <td style={numTd}>{r.avgAbsShipPct == null ? "—" : r.avgAbsShipPct.toFixed(1) + "%"}</td>
+                <td style={numTd}>{r.avgAbsRecPct == null ? "—" : r.avgAbsRecPct.toFixed(1) + "%"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* By Bucket */}
+      <div style={{ fontSize: 13, fontWeight: 600, color: "#111827", margin: "8px 0 4px" }}>By % Variance Bucket (click to drill down)</div>
+      <div style={{ overflowX: "auto" }}>
+        <table style={{ borderCollapse: "collapse", fontSize: 12 }}>
+          <thead>
+            <tr>
+              <th style={thStyle}>Bucket</th>
+              <th style={{ ...thStyle, textAlign: "right" }}># Records</th>
+              <th style={{ ...thStyle, textAlign: "right" }}>% of total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {VARIANCE_BUCKETS.map((b) => {
+              const n = agg.byBucket[b] || 0;
+              const pct = agg.recordCount ? (n / agg.recordCount) * 100 : 0;
+              return (
+                <tr key={b} style={{ cursor: n ? "pointer" : "default" }} onClick={() => n && drillToBucket(b === "exact" ? "exact" : b)}>
+                  <td style={{ ...tdStyle, fontWeight: 500 }}>{b}</td>
+                  <td style={numTd}>{n}</td>
+                  <td style={numTd}>{pct.toFixed(1)}%</td>
+                </tr>
               );
             })}
           </tbody>
