@@ -606,25 +606,55 @@ app.patch("/api/record/:id/office-sample", requireAuth, async (req, res) => {
       }
     }
 
-    // 3. Merge scanned sizes into Scan_JSON for the Office location
+    // 3. Merge scanned sizes into Scan_JSON for the Office location.
+    // Read the current Scan_JSON fresh from Airtable rather than trusting
+    // currentScanJson from the client, so we don't clobber changes a parallel
+    // workflow (e.g. a warehouse closeout) just wrote.
     const sizes = Array.isArray(scannedSizes) ? scannedSizes : [];
     let updatedScanJson = null;
+    let mergedScan = null;
     if (sizes.length > 0) {
       let existingScan = {};
       try {
-        if (currentScanJson) existingScan = JSON.parse(currentScanJson);
-      } catch { existingScan = {}; }
+        const existing = await getRecord(id);
+        const raw = existing?.fields?.[AIRTABLE_FIELDS.SCAN_FIELD];
+        if (raw) existingScan = JSON.parse(raw) || {};
+      } catch (e) {
+        // Fallback to client-provided value if the fresh read fails
+        console.error("[office-sample] fresh Scan_JSON read failed, falling back to client value:", e.message);
+        try {
+          if (currentScanJson) existingScan = JSON.parse(currentScanJson);
+        } catch { existingScan = {}; }
+      }
       if (!existingScan.Office) existingScan.Office = {};
       for (const size of sizes) {
         existingScan.Office[size] = Number(existingScan.Office[size] ?? 0) + 1;
       }
+      mergedScan = existingScan;
       updatedScanJson = JSON.stringify(existingScan);
     }
 
-    // 4. Patch Airtable record
+    // 4. Patch Airtable record.
+    // If closeout has already been submitted (flagged in Scan_JSON) we also
+    // need to bump Rec_* by the office units — closeout's Rec_* totals were
+    // frozen to the warehouse scan matrix at that time and didn't include
+    // any later office samples.
     const patch = { [AIRTABLE_FIELDS.OFFICE_SENT_FIELD]: officeSentDate };
     if (deliveryDate) patch[AIRTABLE_FIELDS.DELIVERY_FIELD] = deliveryDate;
     if (updatedScanJson) patch[AIRTABLE_FIELDS.SCAN_FIELD] = updatedScanJson;
+
+    if (mergedScan && mergedScan._closeoutSubmitted) {
+      const recTotals = {};
+      for (const s of getSizes()) {
+        let total = 0;
+        for (const loc of Object.keys(mergedScan)) {
+          if (loc.startsWith("_")) continue;
+          total += Number(mergedScan[loc]?.[s] ?? 0);
+        }
+        recTotals[s] = total;
+      }
+      for (const s of getSizes()) patch[`Rec_${s}`] = Number(recTotals[s] ?? 0);
+    }
 
     await updateRecord(id, patch);
 
