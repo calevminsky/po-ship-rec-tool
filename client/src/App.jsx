@@ -2031,7 +2031,7 @@ export default function App() {
                           disabled={!shopifyLinked || loading}
                         />
                         <button className="btn primary" disabled={!shopifyLinked || loading || !scanBarcode.trim()} type="submit">
-                          Add
+                          Enter
                         </button>
                         <button className="btn" type="button" onClick={undoLastScan} disabled={!lastScanStack.length}>
                           Undo
