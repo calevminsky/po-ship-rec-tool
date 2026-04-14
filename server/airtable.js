@@ -160,6 +160,14 @@ export async function updateRecord(id, fieldsPatch) {
   return await res.json();
 }
 
+/** Fetch one Airtable record by id. Returns { id, fields } or throws. */
+export async function getRecord(id) {
+  const url = `${BASE}/${baseId}/${encodeURIComponent(table)}/${id}`;
+  const res = await fetch(url, { headers: headers() });
+  if (!res.ok) throw new Error(`Airtable get failed (${res.status}): ${await res.text()}`);
+  return await res.json();
+}
+
 export function getSizes() {
   return sizes;
 }

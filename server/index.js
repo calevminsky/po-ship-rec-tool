@@ -5,7 +5,7 @@ import cookieParser from "cookie-parser";
 import archiver from "archiver";
 import { PDFDocument } from "pdf-lib";
 
-import { listRecordsByPO, updateRecord, getSizes, AIRTABLE_FIELDS, listRecordsByShopifyGid, listInvoicingRecords } from "./airtable.js";
+import { listRecordsByPO, updateRecord, getSizes, AIRTABLE_FIELDS, listRecordsByShopifyGid, listInvoicingRecords, getRecord } from "./airtable.js";
 import {
   getLocations,
   lookupVariantByBarcode,
@@ -332,14 +332,50 @@ app.post("/api/closeout", requireAuth, async (req, res) => {
     const { po, productLabel, recordId, sizes, locations, allocation, scanned, shopifyProduct, buy, ship } = req.body || {};
     if (!recordId) return res.status(400).json({ error: "Missing recordId" });
 
-    // Rec totals per size from scanned matrix
+    // Read existing Scan_JSON so we preserve any non-warehouse entries that
+    // were recorded outside this closeout — notably Office units submitted
+    // via the Office Samples workflow BEFORE the warehouse scan is closed
+    // out. Without this merge, the closeout would overwrite Scan_JSON (losing
+    // the Office entries) and set Rec_* based on warehouse counts only (making
+    // Airtable show fewer units received than reality).
+    let priorScan = {};
+    try {
+      const existing = await getRecord(recordId);
+      const raw = existing?.fields?.[AIRTABLE_FIELDS.SCAN_FIELD];
+      if (raw) priorScan = JSON.parse(raw) || {};
+    } catch (e) {
+      // Non-fatal: if we can't read the existing record we fall back to the
+      // client-provided scan only. Log and continue so a flaky Airtable read
+      // doesn't block a closeout submission.
+      console.error("[closeout] Could not read prior Scan_JSON, proceeding without merge:", e.message);
+    }
+
+    // Warehouse locations in this submission fully replace their prior values
+    // (this is what the user just scanned). Any location present in priorScan
+    // but NOT in this submission (e.g. "Office") is preserved as-is.
+    const submittedLocs = new Set(locations || []);
+    const mergedScan = { ...priorScan };
+    // Drop the internal flag before merging so it doesn't pollute the matrix
+    delete mergedScan._closeoutSubmitted;
+    for (const loc of locations || []) {
+      mergedScan[loc] = { ...(scanned?.[loc] || {}) };
+    }
+
+    // Rec totals per size must include ALL locations in the merged scan —
+    // warehouse locations from this submission + preserved locations like
+    // Office — so Airtable's Rec_* reflects total units physically received.
     const recTotals = {};
     for (const s of sizes || []) {
-      recTotals[s] = (locations || []).reduce((a, loc) => a + Number(scanned?.[loc]?.[s] ?? 0), 0);
+      let total = 0;
+      for (const loc of Object.keys(mergedScan)) {
+        if (loc.startsWith("_")) continue;
+        total += Number(mergedScan[loc]?.[s] ?? 0);
+      }
+      recTotals[s] = total;
     }
 
     // Save scan + totals to Airtable (mark closeout as submitted)
-    const scanWithFlag = { ...scanned, _closeoutSubmitted: true };
+    const scanWithFlag = { ...mergedScan, _closeoutSubmitted: true };
     await updateRecord(recordId, {
       [AIRTABLE_FIELDS.SCAN_FIELD]: JSON.stringify(scanWithFlag),
       ...Object.fromEntries(getSizes().map((s) => [`Rec_${s}`, Number(recTotals[s] ?? 0)]))
