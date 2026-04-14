@@ -1063,21 +1063,28 @@ export default function App() {
 
   // ---------- Mode 3: Scanning ----------
   function onScanSubmit(e) {
-    e.preventDefault();
+    if (e && typeof e.preventDefault === "function") e.preventDefault();
     if (!shopifyLinked || !shopifyProduct) return;
 
     const bc = scanBarcode.trim();
     if (!bc) return;
 
+    const clearAndRefocus = () => {
+      setScanBarcode("");
+      setTimeout(() => scanInputRef.current?.focus(), 25);
+    };
+
     const hit = barcodeMap[bc];
     if (!hit) {
       window.alert("This barcode is NOT part of the linked Shopify product.");
+      clearAndRefocus();
       return;
     }
 
     const size = hit.size;
     if (!sizes.includes(size)) {
       window.alert(`Scanned size "${size}" is not in the size matrix for this tool.`);
+      clearAndRefocus();
       return;
     }
 
@@ -1090,6 +1097,7 @@ export default function App() {
       );
       if (!ok) {
         setStatus(`Over allocation blocked: ${activeLoc} ${size} (alloc ${allocCap})`);
+        clearAndRefocus();
         return;
       }
       setStatus(`Override: scanned beyond allocation for ${activeLoc} ${size}`);
@@ -1103,9 +1111,60 @@ export default function App() {
     }));
     setLastScanStack((prev) => [...prev, { loc: activeLoc, size }]);
 
-    setScanBarcode("");
-    setTimeout(() => scanInputRef.current?.focus(), 25);
+    clearAndRefocus();
   }
+
+  // Auto-submit when a full 12-digit numeric barcode is in the box.
+  // Covers both scanner-at-once and manually-typed entry. Shorter entries
+  // still require pressing Enter or clicking Add so typed partials don't
+  // fire prematurely.
+  useEffect(() => {
+    if (mode !== "receiving") return;
+    if (!shopifyLinked || !shopifyProduct) return;
+    if (/^\d{12}$/.test(scanBarcode.trim())) {
+      onScanSubmit();
+    }
+    // Intentionally excluding onScanSubmit from deps — it's a stable local
+    // closure for this render; clearing scanBarcode prevents loops.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [scanBarcode, mode, shopifyLinked, shopifyProduct]);
+
+  // Keep the cursor in the scan input while the user is in Receiving mode
+  // so they can scan immediately after any button click (e.g. switching
+  // locations). Don't steal focus if they're intentionally typing in a
+  // different input / select / textarea.
+  useEffect(() => {
+    if (mode !== "receiving") return;
+    if (!shopifyLinked) return;
+
+    // Focus immediately when entering the mode or linking Shopify
+    const initial = setTimeout(() => {
+      if (scanInputRef.current && !scanInputRef.current.disabled) {
+        scanInputRef.current.focus();
+      }
+    }, 50);
+
+    function onDocClick(e) {
+      const t = e.target;
+      if (!t) return;
+      const interactive = t.closest && t.closest("input, select, textarea, [contenteditable=true]");
+      // Allow focus on other form fields (user is intentionally editing them).
+      if (interactive && interactive !== scanInputRef.current) return;
+      // After the click's own handlers run, put focus back in the scan box.
+      setTimeout(() => {
+        if (scanInputRef.current && !scanInputRef.current.disabled) {
+          scanInputRef.current.focus();
+        }
+      }, 0);
+    }
+    document.addEventListener("click", onDocClick);
+    window.addEventListener("focus", () => scanInputRef.current?.focus());
+
+    return () => {
+      clearTimeout(initial);
+      document.removeEventListener("click", onDocClick);
+    };
+  }, [mode, shopifyLinked]);
 
   function undoLastScan() {
     setLastScanStack((prev) => {
@@ -1972,7 +2031,7 @@ export default function App() {
                           disabled={!shopifyLinked || loading}
                         />
                         <button className="btn primary" disabled={!shopifyLinked || loading || !scanBarcode.trim()} type="submit">
-                          Add
+                          Enter
                         </button>
                         <button className="btn" type="button" onClick={undoLastScan} disabled={!lastScanStack.length}>
                           Undo
