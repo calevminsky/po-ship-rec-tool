@@ -2462,10 +2462,14 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
   };
   const applyBalanceFilter = (rec) => {
     if (filterBalance === "all") return true;
+    // Airtable rollup formulas can produce tiny floating-point residuals
+    // (e.g. 0.0001) that display as $0.00. Treat anything within half a cent
+    // of zero as "paid" so the filter matches what the user sees.
     const bal = Number(rec.balance ?? 0);
-    if (filterBalance === "owed") return bal > 0;
-    if (filterBalance === "paid") return bal === 0;
-    if (filterBalance === "overpaid") return bal < 0;
+    const EPS = 0.005;
+    if (filterBalance === "owed") return bal >= EPS;
+    if (filterBalance === "paid") return Math.abs(bal) < EPS;
+    if (filterBalance === "overpaid") return bal <= -EPS;
     return true;
   };
 
