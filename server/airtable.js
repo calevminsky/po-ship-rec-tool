@@ -35,6 +35,7 @@ const FINAL_COST_FIELD = process.env.AIRTABLE_FINAL_COST_FIELD || "Final Cost";
 const BALANCE_FIELD = process.env.AIRTABLE_BALANCE_FIELD || "Balance";
 const SHORTAGE_ADJUSTMENT_FIELD = process.env.AIRTABLE_SHORTAGE_ADJUSTMENT_FIELD || "ShortageAdjustment";
 const VENDOR_FIELD = process.env.AIRTABLE_VENDOR_FIELD || "Vendor";
+const ISSUES_FIELD = process.env.AIRTABLE_ISSUES_FIELD || "Issues?";
 
 // Office Samples fields
 const OFFICE_SENT_FIELD = process.env.AIRTABLE_OFFICE_SENT_FIELD || "Office_Sent";
@@ -203,7 +204,7 @@ export async function listInvoicingRecords() {
   const fields = [
     PO_FIELD, PRODUCT_FIELD, ATTACH_FIELD, UNIT_COST_FIELD, SHIP_DATE_FIELD, DELIVERY_FIELD,
     TRACKING_NUMBER_FIELD, PAID_FIELD, CREDIT_AMOUNT_FIELD, INVOICE_AMOUNT_FIELD,
-    FINAL_COST_FIELD, BALANCE_FIELD, SHORTAGE_ADJUSTMENT_FIELD, VENDOR_FIELD,
+    FINAL_COST_FIELD, BALANCE_FIELD, SHORTAGE_ADJUSTMENT_FIELD, VENDOR_FIELD, ISSUES_FIELD,
     ...sizes.flatMap((s) => [`Buy_${s}`, `Ship_${s}`, `Rec_${s}`])
   ];
 
@@ -236,6 +237,8 @@ export async function listInvoicingRecords() {
       const recUnits = sizes.reduce((sum, s) => sum + rec[s], 0);
       const vendorRaw = f[VENDOR_FIELD];
       const vendor = Array.isArray(vendorRaw) ? vendorRaw.join(", ") : String(vendorRaw || "");
+      const issuesRaw = f[ISSUES_FIELD];
+      const issues = Array.isArray(issuesRaw) ? issuesRaw.join(", ") : (issuesRaw ? String(issuesRaw) : "");
       const productName = f[PRODUCT_FIELD] || "";
       allRecords.push({
         id: r.id,
@@ -253,6 +256,7 @@ export async function listInvoicingRecords() {
         invoiceAmount: Number(f[INVOICE_AMOUNT_FIELD] ?? 0),
         finalCost: Number(f[FINAL_COST_FIELD] ?? 0),
         balance: Number(f[BALANCE_FIELD] ?? 0),
+        issues,
         buyUnits, shipUnits, recUnits,
         buy, ship, rec
       });
