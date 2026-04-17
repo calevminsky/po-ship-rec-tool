@@ -2457,6 +2457,30 @@ function MultiSelect({ options, selected, onChange, label, width = 160, searchab
   );
 }
 
+// Per-size Ship vs Buy tolerance: user tolerates shipping up to max(10% of buy, 2 units).
+// Any size with |ship - buy| above that tolerance is flagged red.
+function shipSizeIsRed(buy, ship) {
+  const diff = Number(ship ?? 0) - Number(buy ?? 0);
+  const tolerance = Math.max(Number(buy ?? 0) * 0.10, 2);
+  return Math.abs(diff) > tolerance;
+}
+function recordHasShipVsBuyIssue(rec, sizes) {
+  for (const s of sizes) {
+    if (shipSizeIsRed(rec?.buy?.[s], rec?.ship?.[s])) return true;
+  }
+  return false;
+}
+// Rec column is red if any size has rec != ship.
+function recSizeIsRed(ship, rec) {
+  return Number(ship ?? 0) !== Number(rec ?? 0);
+}
+function recordHasRecVsShipIssue(rec, sizes) {
+  for (const s of sizes) {
+    if (recSizeIsRed(rec?.ship?.[s], rec?.rec?.[s])) return true;
+  }
+  return false;
+}
+
 function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllPo, onDeselectAllPo, loading }) {
   const [view, setView] = useState("records"); // "records" | "variance"
   const [expanded, setExpanded] = useState({});
@@ -2469,6 +2493,8 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
   const [filterDateTo, setFilterDateTo] = useState("");
   const [filterDiscrepancy, setFilterDiscrepancy] = useState("all");
   const [filterBalance, setFilterBalance] = useState("owed");
+  const [filterShipped, setFilterShipped] = useState(false);
+  const [filterReceived, setFilterReceived] = useState(false);
   const [pdfLoading, setPdfLoading] = useState(false);
   // Variance-report table sort state (independent from records sort)
   const [poSortCol, setPoSortCol] = useState("absMaxPct");
@@ -2517,6 +2543,8 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
     if (filterProduct && !String(rec.label || "").toLowerCase().includes(filterProduct.toLowerCase())) return false;
     if (filterDateFrom && (!rec.delivery || rec.delivery < filterDateFrom)) return false;
     if (filterDateTo && (!rec.delivery || rec.delivery > filterDateTo)) return false;
+    if (filterShipped && !(Number(rec.shipUnits ?? 0) > 0)) return false;
+    if (filterReceived && !(Number(rec.recUnits ?? 0) > 0)) return false;
     return discrepancyPred(rec);
   };
   const applyBalanceFilter = (rec) => {
@@ -2552,6 +2580,7 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
       credits: (r) => (Number(r.shortageAdjustment ?? 0) + Number(r.creditAmount ?? 0)),
       paid: (r) => r.paid ?? 0,
       balance: (r) => r.balance ?? 0,
+      issues: (r) => (r.issues || "").toLowerCase(),
     }[sortCol];
     if (getter) {
       filtered = [...filtered].sort((a, b) => {
@@ -2605,12 +2634,14 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
 
   const hasActiveFilters =
     filterVendors.size || filterPos.size || filterProduct || filterDateFrom || filterDateTo ||
-    filterDiscrepancy !== "all" || (view === "records" && filterBalance !== "owed");
+    filterDiscrepancy !== "all" || (view === "records" && filterBalance !== "owed") ||
+    filterShipped || filterReceived;
 
   function clearAllFilters() {
     setFilterVendors(new Set()); setFilterPos(new Set());
     setFilterProduct(""); setFilterDateFrom(""); setFilterDateTo("");
     setFilterDiscrepancy("all");
+    setFilterShipped(false); setFilterReceived(false);
     if (view === "records") setFilterBalance("owed");
   }
 
@@ -2678,6 +2709,24 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
             <option value="all">All balances</option>
           </select>
         )}
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, color: "#374151", cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={filterShipped}
+            onChange={(e) => setFilterShipped(e.target.checked)}
+            style={{ width: 13, height: 13 }}
+          />
+          Shipped
+        </label>
+        <label style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, color: "#374151", cursor: "pointer" }}>
+          <input
+            type="checkbox"
+            checked={filterReceived}
+            onChange={(e) => setFilterReceived(e.target.checked)}
+            style={{ width: 13, height: 13 }}
+          />
+          Received
+        </label>
         {hasActiveFilters && (
           <button className="linkBtn" style={{ fontSize: 11 }} onClick={clearAllFilters}>Clear filters</button>
         )}
@@ -2685,7 +2734,7 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
 
       {view === "records" && <>
       {hasSelection && (
-        <div style={{ marginBottom: 8, position: "sticky", top: 0, zIndex: 10, background: "white", borderBottom: "2px solid #2563eb", padding: "8px 12px", borderRadius: 8, display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap", fontSize: 13 }}>
+        <div style={{ marginBottom: 8, position: "sticky", top: 0, zIndex: 40, background: "rgba(255,255,255,0.97)", backdropFilter: "blur(4px)", border: "1px solid #2563eb", borderBottom: "2px solid #2563eb", padding: "10px 14px", borderRadius: 8, boxShadow: "0 4px 14px rgba(15,23,42,0.12)", display: "flex", gap: 16, alignItems: "center", flexWrap: "wrap", fontSize: 13 }}>
           <span style={{ fontWeight: 600 }}>{selectedCount} selected</span>
           <span>Invoice: <b>{money(grandInvoice)}</b></span>
           <span>Credits: <b>{money(grandShortage + grandCredit)}</b></span>
@@ -2753,13 +2802,13 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
               <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSort("buy")}>Buy{arrow("buy")}</th>
               <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSort("ship")}>Ship{arrow("ship")}</th>
               <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSort("rec")}>Rec{arrow("rec")}</th>
-              <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSort("shipDiff")} title="Shipped − Bought (overage if +, shortage if −)">Ship vs Buy{arrow("shipDiff")}</th>
-              <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSort("recDiff")} title="Received − Bought">Rec vs Buy{arrow("recDiff")}</th>
+              <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSort("shipDiff")} title="Ship vs Buy: red if any size's |ship − buy| exceeds the greater of 10% or 2 units">Ship vs Buy{arrow("shipDiff")}</th>
               <th style={thStyle} onClick={() => handleSort("recDate")}>Rec Date{arrow("recDate")}</th>
               <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSort("invoice")}>Invoice{arrow("invoice")}</th>
               <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSort("credits")}>Credits{arrow("credits")}</th>
               <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSort("paid")}>Paid{arrow("paid")}</th>
               <th style={{ ...thStyle, textAlign: "right" }} onClick={() => handleSort("balance")}>Balance{arrow("balance")}</th>
+              <th style={thStyle} onClick={() => handleSort("issues")}>Issues{arrow("issues")}</th>
             </tr>
           </thead>
           <tbody>
@@ -2791,14 +2840,25 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
                     <td style={{ ...tdStyle, color: "#6b7280" }}>{rec.vendor}</td>
                     <td style={numTd}>{rec.buyUnits ?? 0}</td>
                     <td style={numTd}>{rec.shipUnits ?? 0}</td>
-                    <td style={numTd}>{rec.recUnits ?? 0}</td>
-                    {varianceTd(recVariance.shipDiff, recVariance.shipDiffDollars)}
-                    {varianceTd(recVariance.recDiff, recVariance.recDiffDollars)}
+                    <td style={{ ...numTd, ...(recordHasRecVsShipIssue(rec, sizes) ? { background: "#fef2f2", color: "#dc2626", fontWeight: 600 } : {}) }}>{rec.recUnits ?? 0}</td>
+                    {(() => {
+                      const shipRed = recordHasShipVsBuyIssue(rec, sizes);
+                      const shipDiff = recVariance.shipDiff;
+                      const bg = shipRed ? "#fef2f2" : (shipDiff > 0 ? "#ecfdf5" : undefined);
+                      const color = shipRed ? "#dc2626" : (shipDiff > 0 ? "#16a34a" : "#9ca3af");
+                      return (
+                        <td style={{ ...numTd, background: bg, color }}>
+                          <div style={{ fontWeight: 600 }}>{formatDiff(shipDiff)}</div>
+                          <div style={{ fontSize: 10, opacity: 0.85 }}>{recVariance.shipDiffDollars ? money(recVariance.shipDiffDollars) : ""}</div>
+                        </td>
+                      );
+                    })()}
                     <td style={{ ...tdStyle, fontSize: 11, color: "#6b7280" }}>{rec.delivery || ""}</td>
                     <td style={numTd}>{money(rec.invoiceAmount)}</td>
                     <td style={numTd}>{credits ? money(credits) : ""}</td>
                     <td style={numTd}>{rec.paid ? money(rec.paid) : ""}</td>
                     <td style={{ ...numTd, fontWeight: 600, color: rec.balance > 0 ? "#dc2626" : "#16a34a" }}>{money(rec.balance)}</td>
+                    <td style={{ ...tdStyle, fontSize: 11, color: rec.issues ? "#dc2626" : "#9ca3af" }}>{rec.issues || ""}</td>
                   </tr>
                   {isExpanded && (() => {
                     const buyRow = sizes.map((s) => Number(rec.buy?.[s] ?? 0));
@@ -2809,10 +2869,18 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
                     const recTotal = recRow.reduce((a, b) => a + b, 0);
 
                     const shipDiffRow = sizes.map((_, i) => shipRow[i] - buyRow[i]);
-                    const recDiffRow = sizes.map((_, i) => recRow[i] - buyRow[i]);
+                    const recVsShipRow = sizes.map((_, i) => recRow[i] - shipRow[i]);
                     const shipDiffTotal = shipTotal - buyTotal;
-                    const recDiffTotal = recTotal - buyTotal;
+                    const recVsShipTotal = recTotal - shipTotal;
+                    const shipRedRow = sizes.map((_, i) => shipSizeIsRed(buyRow[i], shipRow[i]));
+                    const recVsShipRedRow = sizes.map((_, i) => recSizeIsRed(shipRow[i], recRow[i]));
+                    const anyShipRed = shipRedRow.some(Boolean);
+                    const anyRecVsShipRed = recVsShipRedRow.some(Boolean);
                     const diffCellStyle = (v) => ({ padding: "2px 8px", textAlign: "right", fontWeight: 500, color: diffColor(v), background: diffBg(v) });
+                    const redCellStyle = { padding: "2px 8px", textAlign: "right", fontWeight: 500, color: "#dc2626", background: "#fef2f2" };
+                    const neutralDiffCellStyle = (v) => (v === 0
+                      ? { padding: "2px 8px", textAlign: "right", fontWeight: 500, color: "#9ca3af" }
+                      : { padding: "2px 8px", textAlign: "right", fontWeight: 500, color: v > 0 ? "#16a34a" : "#6b7280", background: v > 0 ? "#ecfdf5" : undefined });
                     return (
                       <tr>
                         <td colSpan={14} style={{ padding: 0 }}>
@@ -2849,15 +2917,23 @@ function InvoicingPanel({ records, sizes, selected, onToggleSelect, onSelectAllP
                                 </tr>
                                 <tr style={{ borderTop: "1px dashed #e5e7eb" }}>
                                   <td style={{ padding: "2px 8px", color: "#6b7280" }}>Ship − Buy</td>
-                                  {shipDiffRow.map((v, i) => <td key={sizes[i]} style={diffCellStyle(v)}>{v === 0 ? "" : formatDiff(v)}</td>)}
-                                  <td style={{ ...diffCellStyle(shipDiffTotal), fontWeight: 600 }}>{formatDiff(shipDiffTotal)}</td>
-                                  <td style={{ ...diffCellStyle(shipDiffTotal), fontWeight: 600 }}>{money(shipDiffTotal * unitCost)}</td>
+                                  {shipDiffRow.map((v, i) => (
+                                    <td key={sizes[i]} style={shipRedRow[i] ? redCellStyle : neutralDiffCellStyle(v)}>
+                                      {v === 0 ? "" : formatDiff(v)}
+                                    </td>
+                                  ))}
+                                  <td style={{ ...(anyShipRed ? redCellStyle : neutralDiffCellStyle(shipDiffTotal)), fontWeight: 600 }}>{formatDiff(shipDiffTotal)}</td>
+                                  <td style={{ ...(anyShipRed ? redCellStyle : neutralDiffCellStyle(shipDiffTotal)), fontWeight: 600 }}>{money(shipDiffTotal * unitCost)}</td>
                                 </tr>
                                 <tr>
-                                  <td style={{ padding: "2px 8px", color: "#6b7280" }}>Rec − Buy</td>
-                                  {recDiffRow.map((v, i) => <td key={sizes[i]} style={diffCellStyle(v)}>{v === 0 ? "" : formatDiff(v)}</td>)}
-                                  <td style={{ ...diffCellStyle(recDiffTotal), fontWeight: 600 }}>{formatDiff(recDiffTotal)}</td>
-                                  <td style={{ ...diffCellStyle(recDiffTotal), fontWeight: 600 }}>{money(recDiffTotal * unitCost)}</td>
+                                  <td style={{ padding: "2px 8px", color: "#6b7280" }}>Rec − Ship</td>
+                                  {recVsShipRow.map((v, i) => (
+                                    <td key={sizes[i]} style={recVsShipRedRow[i] ? redCellStyle : { padding: "2px 8px", textAlign: "right", color: "#9ca3af" }}>
+                                      {v === 0 ? "" : formatDiff(v)}
+                                    </td>
+                                  ))}
+                                  <td style={{ padding: "2px 8px", textAlign: "right", fontWeight: 600, ...(anyRecVsShipRed ? { color: "#dc2626", background: "#fef2f2" } : { color: "#9ca3af" }) }}>{formatDiff(recVsShipTotal)}</td>
+                                  <td style={{ padding: "2px 8px", textAlign: "right", fontWeight: 600, ...(anyRecVsShipRed ? { color: "#dc2626", background: "#fef2f2" } : { color: "#9ca3af" }) }}>{money(recVsShipTotal * unitCost)}</td>
                                 </tr>
                               </tbody>
                             </table>
