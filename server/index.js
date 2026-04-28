@@ -574,7 +574,7 @@ async function uploadPhotoToAirtable(recordId, photoBase64, photoFilename) {
 app.patch("/api/record/:id/office-sample", requireAuth, async (req, res) => {
   try {
     const id = req.params.id;
-    const { inventoryAdjustments, officeSentDate, deliveryDate, photoBase64, photoFilename, currentScanJson, scannedSizes } = req.body || {};
+    const { submissionId, inventoryAdjustments, officeSentDate, deliveryDate, photoBase64, photoFilename, currentScanJson, scannedSizes } = req.body || {};
 
     if (!id) return res.status(400).json({ error: "Missing record id" });
     if (!Array.isArray(inventoryAdjustments) || !inventoryAdjustments.length)
@@ -583,16 +583,33 @@ app.patch("/api/record/:id/office-sample", requireAuth, async (req, res) => {
 
     const OFFICE_LOCATION_GID = "gid://shopify/Location/69648253025";
 
-    // 1. Adjust Shopify inventory at Office
-    const changes = inventoryAdjustments.map((adj) => ({
-      inventoryItemId: adj.inventoryItemId,
-      locationId: OFFICE_LOCATION_GID,
-      delta: Number(adj.delta ?? 1)
-    }));
+    // Idempotency: if this submissionId was already applied to this record,
+    // skip the Shopify adjust to avoid duplicate inventory changes from a
+    // double-submit or client retry.
+    let preScan = null;
+    if (submissionId) {
+      try {
+        const existing = await getRecord(id);
+        const raw = existing?.fields?.[AIRTABLE_FIELDS.SCAN_FIELD];
+        if (raw) preScan = JSON.parse(raw) || {};
+      } catch (e) {
+        console.error("[office-sample] pre-read for idempotency failed:", e.message);
+      }
+    }
+    const alreadyApplied = !!(submissionId && preScan && Array.isArray(preScan._appliedOfficeSubmissions) && preScan._appliedOfficeSubmissions.includes(submissionId));
 
-    const shopifyResult = await adjustInventoryQuantities({ name: "available", reason: "received", changes });
-    if (!shopifyResult.ok && !shopifyResult.skipped) {
-      return res.status(400).json({ error: "Shopify inventory adjust failed", shopify: shopifyResult });
+    // 1. Adjust Shopify inventory at Office (skip if already applied)
+    if (!alreadyApplied) {
+      const changes = inventoryAdjustments.map((adj) => ({
+        inventoryItemId: adj.inventoryItemId,
+        locationId: OFFICE_LOCATION_GID,
+        delta: Number(adj.delta ?? 1)
+      }));
+
+      const shopifyResult = await adjustInventoryQuantities({ name: "available", reason: "received", changes });
+      if (!shopifyResult.ok && !shopifyResult.skipped) {
+        return res.status(400).json({ error: "Shopify inventory adjust failed", shopify: shopifyResult });
+      }
     }
 
     // 2. Upload photo (non-fatal if it fails)
@@ -613,7 +630,7 @@ app.patch("/api/record/:id/office-sample", requireAuth, async (req, res) => {
     const sizes = Array.isArray(scannedSizes) ? scannedSizes : [];
     let updatedScanJson = null;
     let mergedScan = null;
-    if (sizes.length > 0) {
+    if (sizes.length > 0 || submissionId) {
       let existingScan = {};
       try {
         const existing = await getRecord(id);
@@ -627,8 +644,16 @@ app.patch("/api/record/:id/office-sample", requireAuth, async (req, res) => {
         } catch { existingScan = {}; }
       }
       if (!existingScan.Office) existingScan.Office = {};
-      for (const size of sizes) {
-        existingScan.Office[size] = Number(existingScan.Office[size] ?? 0) + 1;
+      if (!alreadyApplied) {
+        for (const size of sizes) {
+          existingScan.Office[size] = Number(existingScan.Office[size] ?? 0) + 1;
+        }
+      }
+      if (submissionId) {
+        if (!Array.isArray(existingScan._appliedOfficeSubmissions)) existingScan._appliedOfficeSubmissions = [];
+        if (!existingScan._appliedOfficeSubmissions.includes(submissionId)) {
+          existingScan._appliedOfficeSubmissions.push(submissionId);
+        }
       }
       mergedScan = existingScan;
       updatedScanJson = JSON.stringify(existingScan);

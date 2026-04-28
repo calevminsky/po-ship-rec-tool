@@ -357,6 +357,7 @@ export default function App() {
   const [activeLoc, setActiveLoc] = useState(DEFAULT_LOCATIONS[0]);
   const [scanBarcode, setScanBarcode] = useState("");
   const scanInputRef = useRef(null);
+  const osSubmittingRef = useRef(false);
   const [lastScanStack, setLastScanStack] = useState([]);
 
   // Shopify link (auto if Airtable already has product gid)
@@ -1309,13 +1310,19 @@ export default function App() {
   }
 
   async function onOsSubmit() {
+    if (osSubmittingRef.current) return;
     if (!osRecord || !osPhoto || osScanned.length === 0) return;
+    osSubmittingRef.current = true;
     setOsError("");
     try {
       setLoading(true);
       setStatus("Submitting office sample…");
 
+      const submissionId =
+        (typeof crypto !== "undefined" && crypto.randomUUID) ? crypto.randomUUID() : `os-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
       const result = await submitOfficeSample(osRecord.id, {
+        submissionId,
         inventoryAdjustments: osScanned.map((v) => ({ inventoryItemId: v.inventoryItemId, delta: 1 })),
         officeSentDate: today,
         deliveryDate: osDelivery || undefined,
@@ -1342,6 +1349,7 @@ export default function App() {
       setStatus(`Office sample submit failed: ${e.message}`);
     } finally {
       setLoading(false);
+      osSubmittingRef.current = false;
     }
   }
 
