@@ -1,0 +1,9 @@
+{
+  "name": "bin-label-print-helper",
+  "version": "1.0.0",
+  "type": "module",
+  "description": "Local print helper — forwards bin label PDFs to Brother QL-810W via CUPS",
+  "scripts": {
+    "start": "node server.js"
+  }
+}

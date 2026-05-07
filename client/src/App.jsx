@@ -2107,8 +2107,27 @@ export default function App() {
                               try {
                                 setLoading(true);
                                 const blob = await fetchBinLabelPdf({ styleName: labelStyle.trim(), color: labelColor.trim() });
-                                const url = URL.createObjectURL(blob);
-                                window.open(url, "_blank");
+                                try {
+                                  const arrayBuffer = await blob.arrayBuffer();
+                                  const r = await fetch("http://localhost:9631/print", {
+                                    method: "POST",
+                                    headers: { "Content-Type": "application/pdf" },
+                                    body: arrayBuffer,
+                                  });
+                                  if (!r.ok) {
+                                    const j = await r.json().catch(() => ({}));
+                                    throw new Error(j.error || "Print helper error");
+                                  }
+                                  setStatus("Sent to printer.");
+                                } catch (printErr) {
+                                  const url = URL.createObjectURL(blob);
+                                  window.open(url, "_blank");
+                                  setStatus(
+                                    printErr.name === "TypeError"
+                                      ? "Print helper not running — opened PDF in new tab."
+                                      : `Print error: ${printErr.message} — opened PDF in new tab.`
+                                  );
+                                }
                               } catch (e) {
                                 setStatus(`Label failed: ${e.message}`);
                               } finally {
