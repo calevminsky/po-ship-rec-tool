@@ -22,31 +22,35 @@ mkdir -p ~/Documents/bin-label-printer
 curl -fsSo "$HELPER_PATH" https://raw.githubusercontent.com/calevminsky/po-ship-rec-tool/main/print-helper/server.js
 echo "Downloaded server.js"
 
-# Write plist using only printf (no python/node needed)
-{
-  printf '<?xml version="1.0" encoding="UTF-8"?>\n'
-  printf '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">\n'
-  printf '<plist version="1.0">\n'
-  printf '<dict>\n'
-  printf '  <key>Label</key>\n'
-  printf '  <string>com.yakira.bin-label-printer</string>\n'
-  printf '  <key>ProgramArguments</key>\n'
-  printf '  <array>\n'
-  printf '    <string>%s</string>\n' "$NODE"
-  printf '    <string>%s</string>\n' "$HELPER_PATH"
-  printf '  </array>\n'
-  printf '  <key>RunAtLoad</key>\n'
-  printf '  <true/>\n'
-  printf '  <key>KeepAlive</key>\n'
-  printf '  <true/>\n'
-  printf '  <key>StandardOutPath</key>\n'
-  printf '  <string>/tmp/bin-label-printer.log</string>\n'
-  printf '  <key>StandardErrorPath</key>\n'
-  printf '  <string>/tmp/bin-label-printer.log</string>\n'
-  printf '</dict>\n'
-  printf '</plist>\n'
-} > "$PLIST_PATH"
-echo "Wrote plist"
+# Write plist with correct path
+$NODE -e "
+const fs = require('fs');
+const plist = [
+  '<?xml version=\"1.0\" encoding=\"UTF-8\"?>',
+  '<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">',
+  '<plist version=\"1.0\">',
+  '<dict>',
+  '  <key>Label</key>',
+  '  <string>com.yakira.bin-label-printer</string>',
+  '  <key>ProgramArguments</key>',
+  '  <array>',
+  '    <string>$NODE</string>',
+  '    <string>$HELPER_PATH</string>',
+  '  </array>',
+  '  <key>RunAtLoad</key>',
+  '  <true/>',
+  '  <key>KeepAlive</key>',
+  '  <true/>',
+  '  <key>StandardOutPath</key>',
+  '  <string>/tmp/bin-label-printer.log</string>',
+  '  <key>StandardErrorPath</key>',
+  '  <string>/tmp/bin-label-printer.log</string>',
+  '</dict>',
+  '</plist>'
+].join('\n');
+fs.writeFileSync('$PLIST_PATH', plist);
+console.log('Wrote plist');
+"
 
 # Unload if already running, then load
 launchctl unload "$PLIST_PATH" 2>/dev/null || true
