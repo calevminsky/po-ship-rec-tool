@@ -5,6 +5,16 @@ USERNAME=$(whoami)
 HELPER_PATH="/Users/$USERNAME/Documents/bin-label-printer/server.js"
 PLIST_PATH="$HOME/Library/LaunchAgents/com.yakira.bin-label-printer.plist"
 
+# Find node binary
+if [ -f /usr/local/bin/node ]; then
+  NODE=/usr/local/bin/node
+elif [ -f /opt/homebrew/bin/node ]; then
+  NODE=/opt/homebrew/bin/node
+else
+  echo "Error: Node.js not found. Please install it from https://nodejs.org and try again."
+  exit 1
+fi
+
 echo "Setting up bin label print helper for user: $USERNAME"
 
 # Download helper script
@@ -12,8 +22,8 @@ mkdir -p ~/Documents/bin-label-printer
 curl -fsSo "$HELPER_PATH" https://raw.githubusercontent.com/calevminsky/po-ship-rec-tool/main/print-helper/server.js
 echo "Downloaded server.js"
 
-# Write plist with correct path (using node to avoid requiring Xcode/python)
-node -e "
+# Write plist with correct path
+$NODE -e "
 const fs = require('fs');
 const plist = [
   '<?xml version=\"1.0\" encoding=\"UTF-8\"?>',
@@ -24,7 +34,7 @@ const plist = [
   '  <string>com.yakira.bin-label-printer</string>',
   '  <key>ProgramArguments</key>',
   '  <array>',
-  '    <string>/usr/local/bin/node</string>',
+  '    <string>$NODE</string>',
   '    <string>$HELPER_PATH</string>',
   '  </array>',
   '  <key>RunAtLoad</key>',
