@@ -18,7 +18,8 @@ const server = http.createServer((req, res) => {
     return;
   }
 
-  if (req.method === 'POST' && req.url === '/print') {
+  if (req.method === 'POST' && req.url.startsWith('/print')) {
+    const qty = Math.max(1, Math.min(50, parseInt(new URL(req.url, 'http://localhost').searchParams.get('qty')) || 1));
     const chunks = [];
     req.on('data', chunk => chunks.push(chunk));
     req.on('end', () => {
@@ -31,7 +32,7 @@ const server = http.createServer((req, res) => {
         res.end(JSON.stringify({ error: `Could not write temp file: ${e.message}` }));
         return;
       }
-      exec(`lp -d ${PRINTER} "${tmpFile}"`, (err, _stdout, stderr) => {
+      exec(`lp -d ${PRINTER} -n ${qty} -o media=Custom.62x330mm -o fit-to-page "${tmpFile}"`, (err, _stdout, stderr) => {
         try { unlinkSync(tmpFile); } catch {}
         if (err) {
           console.error('Print error:', stderr || err.message);

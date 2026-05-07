@@ -354,6 +354,7 @@ export default function App() {
   const [labelOpen, setLabelOpen] = useState(false);
   const [labelStyle, setLabelStyle] = useState("");
   const [labelColor, setLabelColor] = useState("");
+  const [labelQty, setLabelQty] = useState(1);
   const [activeLoc, setActiveLoc] = useState(DEFAULT_LOCATIONS[0]);
   const [scanBarcode, setScanBarcode] = useState("");
   const scanInputRef = useRef(null);
@@ -2099,6 +2100,18 @@ export default function App() {
                               style={{ width: 180 }}
                             />
                           </label>
+                          <label style={{ display: "flex", flexDirection: "column", fontSize: 12, fontWeight: 600 }}>
+                            Qty
+                            <input
+                              className="input"
+                              type="number"
+                              min={1}
+                              max={50}
+                              value={labelQty}
+                              onChange={(e) => setLabelQty(Math.max(1, Math.min(50, parseInt(e.target.value) || 1)))}
+                              style={{ width: 60 }}
+                            />
+                          </label>
                           <button
                             className="btn primary"
                             type="button"
@@ -2109,16 +2122,17 @@ export default function App() {
                                 const blob = await fetchBinLabelPdf({ styleName: labelStyle.trim(), color: labelColor.trim() });
                                 try {
                                   const arrayBuffer = await blob.arrayBuffer();
-                                  const r = await fetch("http://localhost:9631/print", {
+                                  const r = await fetch(`http://localhost:9631/print?qty=${labelQty}`, {
                                     method: "POST",
                                     headers: { "Content-Type": "application/pdf" },
                                     body: arrayBuffer,
+                                    signal: AbortSignal.timeout(10000),
                                   });
                                   if (!r.ok) {
                                     const j = await r.json().catch(() => ({}));
                                     throw new Error(j.error || "Print helper error");
                                   }
-                                  setStatus("Sent to printer.");
+                                  setStatus(`Sent ${labelQty} label${labelQty > 1 ? "s" : ""} to printer.`);
                                 } catch (printErr) {
                                   const url = URL.createObjectURL(blob);
                                   window.open(url, "_blank");
